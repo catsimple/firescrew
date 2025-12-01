@@ -5,6 +5,13 @@ let modal = document.getElementById('myModal');
 let videoPlayer = document.getElementById('videoPlayer');
 let span = document.getElementsByClassName("close")[0];
 
+// New UI element references
+let startTimeInput = document.getElementById('startTimeInput');
+let endTimeInput = document.getElementById('endTimeInput');
+let filterButton = document.getElementById('filterButton');
+let promptInput = document.getElementById('promptInput');
+
+
 const colorGroups = [
     // Warm colors
     [
@@ -31,13 +38,18 @@ const colorGroups = [
     ],
   ];
   
-  
-
-// Focus on the prompt input
+// On page load, set default times and fetch data for today
 window.onload = function () {
-    let input = document.getElementById('promptInput');
-    input.focus();
-    input.setSelectionRange(input.value.length, input.value.length);
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+
+    // Format for datetime-local input: YYYY-MM-DDTHH:MM
+    startTimeInput.value = todayStart.toISOString().slice(0, 16);
+    endTimeInput.value = todayEnd.toISOString().slice(0, 16);
+    
+    promptInput.focus();
+    buildPromptAndQuery(); // Load data for today by default
 }
 
 // Get eventInfo object
@@ -84,9 +96,6 @@ function getEventColor(eventId) {
     }
     return eventColorMap[eventId].color;
 }
-
-  
-  
 
 function getObjectIcon(objectType) {
     switch (objectType) {
@@ -156,27 +165,43 @@ function addPlainLabel(value, optClass) {
 }
 
 function formatDate(dateString) {
-    // Create a new Date object
     let date = new Date(dateString);
-
-    // Get the components of the date
     let day = String(date.getDate()).padStart(2, '0');
-    let month = String(date.getMonth() + 1).padStart(2, '0'); // Months are 0-based, so add 1
+    let month = String(date.getMonth() + 1).padStart(2, '0');
     let year = String(date.getFullYear()).slice(2);
     let hours = String(date.getHours()).padStart(2, '0');
     let minutes = String(date.getMinutes()).padStart(2, '0');
     let seconds = String(date.getSeconds()).padStart(2, '0');
-
-    // Format the date
-    let formattedDate = `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
-
-    return formattedDate;
+    return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
 }
 
-function queryData() {
-    let promptValue = document.getElementById('promptInput').value;
-    // If promptValue == "" return
-    if (promptValue == "") {
+// Main function to build the prompt and trigger the query
+function buildPromptAndQuery() {
+    let keywords = promptInput.value.trim();
+    let startTime = startTimeInput.value;
+    let endTime = endTimeInput.value;
+
+    let finalPrompt = keywords;
+
+    if (startTime && endTime) {
+        // Format the date/time strings for the natural date parser
+        const start = new Date(startTime);
+        const end = new Date(endTime);
+        const fromStr = `${start.toLocaleString('en-US')}`;
+        const toStr = `${end.toLocaleString('en-US')}`;
+        finalPrompt += ` from ${fromStr} to ${toStr}`;
+    } else if (keywords === "") {
+        // If everything is empty, don't query
+        imageGrid.innerHTML = '<p style="color: #ccc; text-align: center;">Please select a date range or enter a keyword.</p>';
+        return;
+    }
+
+    queryData(finalPrompt);
+}
+
+// Refactored queryData to accept a prompt
+function queryData(promptValue) {
+    if (!promptValue || promptValue.trim() === "") {
         return;
     }
 
@@ -186,119 +211,85 @@ function queryData() {
     fetch('/api?prompt=' + encodeURIComponent(promptValue))
         .then(response => response.json())
         .then(data => {
-            // Log the data for debugging
             console.log('Received data:', data);
 
-            // Then proceed as before
             if (data && data.data) {
+                if (data.data.length === 0) {
+                    imageGrid.innerHTML = '<p style="color: #ccc; text-align: center;">No events found for the selected criteria.</p>';
+                    return;
+                }
                 data.data.forEach(item => {
                     item.Snapshots.forEach(snapshot => {
                         let imgDiv = document.createElement('div');
                         imgDiv.classList.add("image-wrapper");
 
                         let img = document.createElement('img');
+                        // Snapshot path now includes the date directory, which is correct
                         img.src = baseImageUrl + snapshot;
 
-                        // Add a background color based on the event
                         let color = getEventColor(item.ID);
                         img.style.boxShadow = `0 0 6px 2px ${color}`;
-
                         imgDiv.appendChild(img);
 
-                        // Create a div for the icons
                         let iconsDiv = document.createElement('div');
                         iconsDiv.classList.add('icons');
 
-                        // If there are objects, add the icon
                         if (item.Objects && item.Objects.length > 0) {
-                            let uniqueObjects = [];
-
-                            item.Objects.forEach(object => {
-                                if (!uniqueObjects.includes(object.Class)) {
-                                    uniqueObjects.push(object.Class);
-                                }
-                            });
-
+                            let uniqueObjects = [...new Set(item.Objects.map(obj => obj.Class))];
                             uniqueObjects.forEach(objectClass => {
                                 let icon = document.createElement('i');
                                 icon.className = getObjectIcon(objectClass);
                                 icon.classList.add("objectIcon");
-                                iconsDiv.appendChild(icon);  // Append the icon to the iconsDiv
+                                iconsDiv.appendChild(icon);
                             });
                         }
-
-                        // Append the iconsDiv to the imgDiv
                         imgDiv.appendChild(iconsDiv);
 
                         img.addEventListener('click', function () {
+                            // VideoFile path now also includes the date directory
                             playVideo(item.VideoFile, baseImageUrl + snapshot);
-                            if (item.Objects && item.Objects.length > 0) {
-                                // Go over all item.Objects and add Class/Confidence to eventInfo div
-                                eventInfo.innerHTML = '';
-                                // Add infoLabel with event ID
-                                addInfoLabel('ID', item.ID, "infoLabelEventID");
-                                // Add MotionStart time
-                                // Convert MotionStart from 2023-07-28T16:35:52.161927-04:00 to 2023-07-28 16:35:52
-                                newDate = formatDate(item.MotionStart)
-                                addInfoLabel('T', newDate, "infoLabelTime");
-                                // Add infoLabel with camera name
-                                addInfoLabel('Cam', item.CameraName, "infoLabelCameraName");
+                            eventInfo.innerHTML = '';
+                            addInfoLabel('ID', item.ID, "infoLabelEventID");
+                            let newDate = formatDate(item.MotionStart);
+                            addInfoLabel('T', newDate, "infoLabelTime");
+                            addInfoLabel('Cam', item.CameraName, "infoLabelCameraName");
 
-                                // Reset the uniqueObjects array for eventInfo div
-                                let uniqueObjects = [];
-
-                                item.Objects.forEach(object => {
-                                    // Trim confidence to 2 decimals
-                                    // object.Confidence = Math.round(object.Confidence * 100) / 100;
-                                    // Add to uniqueObjects array is not already there
-                                    if (!uniqueObjects.includes(object.Class)) {
-                                        uniqueObjects.push(object.Class);
-                                    }
-                                });
-
-                                // Add uniqueObjects to eventInfo div
-                                uniqueObjects.forEach(object => {
-                                    addPlainLabel(object);
-                                });
-
-                            }
+                            let uniqueObjects = [...new Set(item.Objects.map(obj => obj.Class))];
+                            uniqueObjects.forEach(object => {
+                                addPlainLabel(object);
+                            });
                         });
-
                         imageGrid.appendChild(imgDiv);
                     });
                 });
             } else {
                 console.error('Invalid data:', data);
+                imageGrid.innerHTML = `<p style="color: #ff6b6b; text-align: center;">Error fetching data. Check console for details.</p><p style="color: #ccc; text-align: center;">${data.Error || ''}</p>`;
             }
         })
-        .catch(error => console.error('Error:', error));
+        .catch(error => {
+            console.error('Error:', error);
+            imageGrid.innerHTML = '<p style="color: #ff6b6b; text-align: center;">A network error occurred. Is the server running?</p>';
+        });
 }
 
-
-
-promptInput.addEventListener('keydown', function (event) {
-    if (event.key === "Enter") {
-        event.preventDefault();
-        queryData();
-    }
-});
-
-// Every 30 seconds query the data
-// setInterval(queryData, 15000);
+// Event Listeners for the new UI
+filterButton.addEventListener('click', buildPromptAndQuery);
+promptInput.addEventListener('keydown', function(event) { if (event.key === "Enter") buildPromptAndQuery(); });
+startTimeInput.addEventListener('keydown', function(event) { if (event.key === "Enter") buildPromptAndQuery(); });
+endTimeInput.addEventListener('keydown', function(event) { if (event.key === "Enter") buildPromptAndQuery(); });
 
 // Function to close the modal
 function closeModal() {
     modal.style.display = "none";
-    videoPlayer.pause();  // Pause the video
-    videoPlayer.currentTime = 0;  // Reset video time
+    videoPlayer.pause();
+    videoPlayer.currentTime = 0;
 }
 
-// When the user clicks on <span> (x), close the modal
 span.onclick = function () {
     closeModal();
 }
 
-// When the user clicks anywhere outside of the modal, close it
 window.onclick = function (event) {
     if (event.target == modal) {
         closeModal();
