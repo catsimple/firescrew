@@ -37,13 +37,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/8ff/firescrew/pkg/firescrewServe"
+	"github.com/catsimple/firescrew/pkg/firescrewServe"
 	"github.com/8ff/tuna"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/goki/freetype"
 	"github.com/goki/freetype/truetype"
 
-	ob "github.com/8ff/firescrew/pkg/objectPredict"
+	ob "github.com/catsimple/firescrew/pkg/objectPredict"
 	"github.com/8ff/prettyTimer"
 	"github.com/hybridgroup/mjpeg"
 )
@@ -793,7 +793,7 @@ func main() {
 		arch := runtime.GOARCH
 
 		// Build URL
-		e := tuna.SelfUpdate(fmt.Sprintf("https://github.com/8ff/firescrew/releases/download/latest/firescrew.%s.%s", osRelease, arch))
+		e := tuna.SelfUpdate(fmt.Sprintf("https://github.com/catsimple/firescrew/releases/download/latest/firescrew.%s.%s", osRelease, arch))
 		if e != nil {
 			fmt.Println(e)
 			os.Exit(1)
