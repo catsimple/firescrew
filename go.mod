@@ -1,4 +1,4 @@
-module github.com/8ff/firescrew
+module github.com/catsimple/firescrew
 
 go 1.21.0
 
