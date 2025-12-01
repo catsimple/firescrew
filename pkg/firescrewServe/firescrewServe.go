@@ -70,80 +70,78 @@ func Log(level, msg string) {
 	}
 }
 
-func loadData(basePath string, tStart time.Time, tEnd time.Time) ([]FileData, error) {
+// 优化：loadData 现在接受时间范围，只扫描特定日期的子文件夹
+func loadData(baseFolder string, tStart, tEnd time.Time) ([]FileData, error) {
 	var data []FileData
 
-	// Iterate through each day in the date range
-	for d := tStart.Truncate(24 * time.Hour); !d.After(tEnd.Truncate(24 * time.Hour)); d = d.AddDate(0, 0, 1) {
-		dateStr := d.Format("2006-01-02")
-		dirPath := filepath.Join(basePath, dateStr)
+	// Iterate from tStart to tEnd by day
+	current := tStart
+	for !current.After(tEnd) {
+		dateStr := current.Format("2006-01-02")
+		dailyFolder := filepath.Join(baseFolder, dateStr)
 
-		if _, err := os.Stat(dirPath); os.IsNotExist(err) {
-			continue // No events on this day
-		}
-
-		entries, err := os.ReadDir(dirPath)
-		if err != nil {
-			Log("warning", fmt.Sprintf("Failed to read directory %s: %v", dirPath, err))
+		// Check if folder exists
+		if _, err := os.Stat(dailyFolder); os.IsNotExist(err) {
+			// Skip this day
+			current = current.AddDate(0, 0, 1)
 			continue
 		}
 
-		for _, entry := range entries {
-			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "meta_") || !strings.HasSuffix(entry.Name(), ".json") {
-				continue
-			}
-
-			// Efficiently filter by filename before reading file
-			fileNameTimestampStr := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "meta_"), ".json")
-			fileTime, err := time.Parse("20060102_150405", fileNameTimestampStr)
+		err := filepath.Walk(dailyFolder, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
-				continue // Skip files with malformed names
+				return nil
 			}
 
-			if fileTime.Before(tStart) || fileTime.After(tEnd) {
-				continue // Skip files outside the precise time range
+			if !info.IsDir() && filepath.Ext(path) == ".json" {
+				file, err := os.Open(path)
+				if err != nil {
+					return err
+				}
+				defer file.Close()
+
+				byteValue, err := io.ReadAll(file)
+				if err != nil {
+					return err
+				}
+
+				var fileData FileData
+				if err = json.Unmarshal(byteValue, &fileData); err != nil {
+					return fmt.Errorf("error parsing JSON from file %s: %w", path, err)
+				}
+
+				// Check if .mp4 version exists
+				// 注意：fileData.VideoFile 现在包含相对路径 "2023-01-01/clip.ts"
+				fullVideoPath := filepath.Join(baseFolder, fileData.VideoFile)
+				mp4FilePath := strings.TrimSuffix(fullVideoPath, filepath.Ext(fullVideoPath)) + ".mp4"
+				
+				if _, err := os.Stat(mp4FilePath); err == nil {
+					// Update VideoFile extension to mp4 if it exists
+					// 保持相对路径
+					fileData.VideoFile = strings.TrimSuffix(fileData.VideoFile, filepath.Ext(fileData.VideoFile)) + ".mp4"
+				}
+
+				data = append(data, fileData)
 			}
+			return nil
+		})
 
-			// File is within range, now read and process it
-			fullPath := filepath.Join(dirPath, entry.Name())
-			jsonFile, err := os.Open(fullPath)
-			if err != nil {
-				Log("warning", fmt.Sprintf("Failed to open file %s: %v", fullPath, err))
-				continue
-			}
-
-			byteValue, _ := io.ReadAll(jsonFile)
-			jsonFile.Close() // Close file immediately after reading
-
-			var fileData FileData
-			if err := json.Unmarshal(byteValue, &fileData); err != nil {
-				Log("warning", fmt.Sprintf("Error parsing JSON from file %s: %v", fullPath, err))
-				continue
-			}
-
-			// Prepend the date directory to paths for frontend URL construction (using '/' for URLs)
-			for i, snapshot := range fileData.Snapshots {
-				fileData.Snapshots[i] = dateStr + "/" + snapshot
-			}
-			videoWithDate := dateStr + "/" + fileData.VideoFile
-
-			// Check for MP4 version by checking the filesystem path
-			mp4FilePathInFS := filepath.Join(basePath, dateStr, strings.TrimSuffix(fileData.VideoFile, filepath.Ext(fileData.VideoFile))+".mp4")
-			if _, err := os.Stat(mp4FilePathInFS); err == nil {
-				// Use the mp4 path for the frontend URL
-				fileData.VideoFile = dateStr + "/" + strings.TrimSuffix(fileData.VideoFile, filepath.Ext(fileData.VideoFile)) + ".mp4"
-			} else {
-				fileData.VideoFile = videoWithDate
-			}
-
-			data = append(data, fileData)
+		if err != nil {
+			Log("error", fmt.Sprintf("Error walking folder %s: %v", dailyFolder, err))
 		}
+
+		current = current.AddDate(0, 0, 1)
 	}
 
-	// Sort final results by motion start time, descending
+	// Sort objects by FileData.MotionStart value (descending)
 	sort.Slice(data, func(i, j int) bool {
-		startI, _ := time.Parse(time.RFC3339, data[i].MotionStart)
-		startJ, _ := time.Parse(time.RFC3339, data[j].MotionStart)
+		startI, err := time.Parse(time.RFC3339, data[i].MotionStart)
+		if err != nil {
+			return false
+		}
+		startJ, err := time.Parse(time.RFC3339, data[j].MotionStart)
+		if err != nil {
+			return false
+		}
 		return startI.After(startJ)
 	})
 
@@ -173,14 +171,9 @@ func ParseDateRangePrompt(prompt string) (time.Time, time.Time, error) {
 		}
 	}
 
-	fmt.Printf("matches: %v\n", matches)
-
 	// Extract the start and end time strings
 	startStr := matches[2]
 	endStr := matches[4]
-
-	// fmt.Printf("startStr: %s\n", startStr)
-	// fmt.Printf("endStr: %s\n", endStr)
 
 	// Parse the start and end times
 	tStart, err := naturaldate.Parse(startStr, time.Now())
@@ -216,9 +209,9 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Strip all punctuation for tag parsing later
-	promptKeywords := strings.Map(func(r rune) rune {
-		if strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ", r) {
+	// Strip punctuation for keyword matching, but keep numbers and spaces
+	cleanPrompt := strings.Map(func(r rune) rune {
+		if strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 : ", r) {
 			return r
 		}
 		return -1
@@ -226,32 +219,31 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 
 	Log("info", fmt.Sprintf("Prompt: %s", prompt))
 
-	// 1. Parse date range from the prompt first
+	// 优化：先解析日期，然后只加载对应日期的数据
 	tStart, tEnd, err := ParseDateRangePrompt(prompt)
 	if err != nil {
-		Log("error", fmt.Sprintf("Error parsing date range prompt: %s", err))
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		// 如果解析失败，默认查询今天
+		Log("warning", fmt.Sprintf("Error parsing date range, defaulting to today: %s", err))
+		now := time.Now()
+		tStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+		tEnd = time.Date(now.Year(), now.Month(), now.Day(), 23, 59, 59, 0, now.Location())
 	}
 
-	Log("info", fmt.Sprintf("parsed start time: %v", tStart))
-	Log("info", fmt.Sprintf("parsed end time: %v", tEnd))
+	Log("info", fmt.Sprintf("Query Range: %v - %v", tStart, tEnd))
 
-	// 2. Call the new, efficient loadData with the parsed time range
 	data, err := loadData(mediaPath, tStart, tEnd)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	Log("debug", fmt.Sprintf("Loaded %d files from the specified date range", len(data)))
 
-	// 3. The rest of the logic is for filtering by keywords (tags)
-	words := strings.Fields(promptKeywords)
+	Log("debug", fmt.Sprintf("Loaded %d events in range", len(data)))
+
+	words := strings.Fields(cleanPrompt)
 	var tags []Tag
 
-	// This logic can be improved, but we'll keep it for now
-	// It iterates all loaded data just to find tags from keywords
 	for _, word := range words {
+		// Basic keyword matching
 		for _, fileData := range data {
 			if word == fileData.CameraName {
 				tags = append(tags, Tag{Tag: word, Type: "camera"})
@@ -278,39 +270,45 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tags = uniqueTagsList
-	fmt.Printf("tags: %v\n", tags)
 
-	// 4. Filter the time-filtered data by tags
+	// 过滤数据 (Filter Data)
 	var filteredData []FileData
-	if len(tags) == 0 {
-		filteredData = data // No tags, so return all data from the time range
-	} else {
-		for _, fileData := range data {
-			match := false
-			for _, tag := range tags {
-				if tag.Type == "camera" && fileData.CameraName == singular(tag.Tag) {
-					match = true
-					break
-				}
-				if tag.Type == "class" {
-					for _, object := range fileData.Objects {
-						if object.Class == singular(tag.Tag) {
-							match = true
-							break
+	for _, fileData := range data {
+		motionStart, err := time.Parse(time.RFC3339, fileData.MotionStart)
+		if err != nil {
+			continue 
+		}
+
+		if (motionStart.After(tStart) || motionStart.Equal(tStart)) && motionStart.Before(tEnd) {
+			if len(tags) == 0 {
+				filteredData = append(filteredData, fileData)
+			} else {
+				match := false
+				for _, tag := range tags {
+					if tag.Type == "camera" && fileData.CameraName == singular(tag.Tag) {
+						match = true
+						break
+					}
+					if tag.Type == "class" {
+						for _, object := range fileData.Objects {
+							if object.Class == singular(tag.Tag) {
+								match = true
+								break
+							}
 						}
+					}
+					if match {
+						break
 					}
 				}
 				if match {
-					break
+					filteredData = append(filteredData, fileData)
 				}
-			}
-			if match {
-				filteredData = append(filteredData, fileData)
 			}
 		}
 	}
 
-	Log("info", fmt.Sprintf("Returning %d events", len(filteredData)))
+	Log("info", fmt.Sprintf("Returning %d filtered events", len(filteredData)))
 	if filteredData == nil {
 		filteredData = []FileData{}
 	}
@@ -360,14 +358,15 @@ func (r *httpRange) contentRange(size int64) string {
 func rangeVideo(w http.ResponseWriter, req *http.Request) {
 
 	// Get the requested file's path
-	requestedFilePath := mediaPath + strings.TrimPrefix(req.URL.Path, "/rec/")
+	// mediaPath 已经包含了最后的 slash
+	// req.URL.Path 是 /rec/2023-01-01/clip.ts
+	// strings.TrimPrefix 去掉 /rec/ 变成 2023-01-01/clip.ts
+	requestedFilePath := filepath.Join(mediaPath, strings.TrimPrefix(req.URL.Path, "/rec/"))
 
 	// Check if .mp4 version of the file exists
 	mp4FilePath := strings.TrimSuffix(requestedFilePath, filepath.Ext(requestedFilePath)) + ".mp4"
 	if _, err := os.Stat(mp4FilePath); err == nil {
-		// If it exists, serve the .mp4 version instead
-		// Log("debug", fmt.Sprintf("Serving .mp4 file: %s", mp4FilePath))
-		requestedFilePath = mp4FilePath // Replace with .mp4 file path
+		requestedFilePath = mp4FilePath 
 	}
 
 	// Determine Content-Type based on file extension
@@ -378,7 +377,7 @@ func rangeVideo(w http.ResponseWriter, req *http.Request) {
 	case ".mp4":
 		contentType = "video/mp4"
 	default:
-		contentType = "application/octet-stream" // Fallback content type
+		contentType = "application/octet-stream" 
 	}
 
 	// Open the requested file
@@ -452,7 +451,9 @@ func rangeVideo(w http.ResponseWriter, req *http.Request) {
 func serveImages(w http.ResponseWriter, r *http.Request) {
 	// Strip /images
 	requestFile := strings.TrimPrefix(r.URL.Path, "/images/")
-	img := mediaPath + requestFile
+	// requestFile 可能包含子路径，如 2023-01-01/snap.jpg
+	img := filepath.Join(mediaPath, requestFile)
+	
 	file, err := os.Open(img)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
@@ -469,12 +470,8 @@ func serveImages(w http.ResponseWriter, r *http.Request) {
 }
 
 func Serve(path string, addr string) error {
-	// If path doesnt end with / add it
-	if path[len(path)-1:] != "/" {
-		mediaPath = path + "/"
-	} else {
-		mediaPath = path
-	}
+	// Clean path
+	mediaPath = filepath.Clean(path)
 
 	// Server images
 	http.HandleFunc("/images/", serveImages)
@@ -515,7 +512,3 @@ func Serve(path string, addr string) error {
 
 	return nil
 }
-
-// func main() {
-// 	Serve("../../rec/hi", ":8080")
-// }
