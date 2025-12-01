@@ -781,20 +781,20 @@ func main() {
 		// Print version
 		fmt.Println(Version)
 		os.Exit(0)
-	// case "-update", "--update", "update":
-	// 	// Determine OS and ARCH
-	// 	osRelease := runtime.GOOS
-	// 	arch := runtime.GOARCH
-	//
-	// 	// Build URL
-	// 	e := tuna.SelfUpdate(fmt.Sprintf("https://github.com/8ff/firescrew/releases/download/latest/firescrew.%s.%s", osRelease, arch))
-	// 	if e != nil {
-	// 		fmt.Println(e)
-	// 		os.Exit(1)
-	// 	}
-	//
-	// 	fmt.Println("Updated!")
-	// 	os.Exit(0)
+	 case "-update", "--update", "update":
+	 	// Determine OS and ARCH
+	 	osRelease := runtime.GOOS
+	 	arch := runtime.GOARCH
+	
+	 	// Build URL
+	 	e := tuna.SelfUpdate(fmt.Sprintf("https://github.com/8ff/firescrew/releases/download/latest/firescrew.%s.%s", osRelease, arch))
+	 	if e != nil {
+	 		fmt.Println(e)
+	 		os.Exit(1)
+	 	}
+	
+	 	fmt.Println("Updated!")
+	 	os.Exit(0)
 	}
 
 	// Read the config file
