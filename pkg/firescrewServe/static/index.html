@@ -2,56 +2,48 @@
 <html>
 
 <head>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>FireScrew NVR</title>
     <link rel="stylesheet" href="static/main.css">
     <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.15.4/css/all.css">
     <meta name="apple-mobile-web-app-title" content="firescrew">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <link rel="apple-touch-icon" href="/media/firescrew_icon.png">
-    <style>
-        .controls-container {
-            width: 50%;
-            max-width: 600px;
-            margin: 10px auto;
-            text-align: center;
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-        }
-        #quickDate, #datePicker {
-            padding: 10px;
-            border-radius: 4px;
-            border: 2px solid #444;
-            background-color: #222;
-            color: #eee;
-            outline: none;
-        }
-    </style>
 </head>
 
 <body>
-    <div class="controls-container">
-        <select id="quickDate">
-            <option value="today">Today</option>
-            <option value="yesterday">Yesterday</option>
-            <option value="custom">Custom Date</option>
-        </select>
-        <input type="date" id="datePicker" style="display:none;">
+    <!-- 顶部控制栏 -->
+    <div class="controls-wrapper">
+        <div class="date-group">
+            <div class="date-item">
+                <span class="date-label">FROM</span>
+                <input type="datetime-local" id="startDate" class="date-input">
+            </div>
+            <div class="date-item">
+                <span class="date-label">TO</span>
+                <input type="datetime-local" id="endDate" class="date-input">
+            </div>
+        </div>
+        <div class="search-row">
+            <input id="promptInput" type="text" placeholder="Filter by keyword (e.g. car, person, dog)...">
+            <button class="btn" onclick="queryData()">Search</button>
+        </div>
     </div>
-    
-    <input id="promptInput" type="text" placeholder="Enter keywords (e.g. person, car)..." value="today">
-    
+
+    <!-- 图片展示区 -->
     <div id="imageGrid" class="image-grid"></div>
-    <!-- The Modal -->
+
+    <!-- 视频播放弹窗 -->
     <div id="myModal" class="modal">
-        <!-- Modal content -->
         <div class="modal-content">
             <span class="close">&times;</span>
             <div id="eventInfo"></div>
-            <video id="videoPlayer" controls></video>
+            <video id="videoPlayer" controls autoplay playsinline></video>
         </div>
     </div>
+
     <script src="static/main.js"></script>
 </body>
 
