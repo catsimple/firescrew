@@ -9,17 +9,39 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
     <link rel="apple-touch-icon" href="/media/firescrew_icon.png">
+    <style>
+        .controls-container {
+            width: 50%;
+            max-width: 600px;
+            margin: 10px auto;
+            text-align: center;
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+        #quickDate, #datePicker {
+            padding: 10px;
+            border-radius: 4px;
+            border: 2px solid #444;
+            background-color: #222;
+            color: #eee;
+            outline: none;
+        }
+    </style>
 </head>
 
 <body>
-    <div id="controls">
-        <input id="promptInput" type="text" placeholder="Filter by object (e.g. person, car)" value="">
-        <label for="startTimeInput">From:</label>
-        <input type="datetime-local" id="startTimeInput">
-        <label for="endTimeInput">To:</label>
-        <input type="datetime-local" id="endTimeInput">
-        <button id="filterButton">Filter</button>
+    <div class="controls-container">
+        <select id="quickDate">
+            <option value="today">Today</option>
+            <option value="yesterday">Yesterday</option>
+            <option value="custom">Custom Date</option>
+        </select>
+        <input type="date" id="datePicker" style="display:none;">
     </div>
+    
+    <input id="promptInput" type="text" placeholder="Enter keywords (e.g. person, car)..." value="today">
+    
     <div id="imageGrid" class="image-grid"></div>
     <!-- The Modal -->
     <div id="myModal" class="modal">
