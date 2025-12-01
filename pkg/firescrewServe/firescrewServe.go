@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -71,61 +72,82 @@ func Log(level, msg string) {
 	}
 }
 
-func loadData(folder string) ([]FileData, error) {
+func loadData(basePath string, tStart time.Time, tEnd time.Time) ([]FileData, error) {
 	var data []FileData
 
-	err := filepath.Walk(folder, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	// Iterate through each day in the date range
+	for d := tStart.Truncate(24 * time.Hour); !d.After(tEnd.Truncate(24 * time.Hour)); d = d.AddDate(0, 0, 1) {
+		dateStr := d.Format("2006-01-02")
+		dirPath := filepath.Join(basePath, dateStr)
+
+		if _, err := os.Stat(dirPath); os.IsNotExist(err) {
+			continue // No events on this day
 		}
 
-		if !info.IsDir() && filepath.Ext(path) == ".json" {
-			file, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			defer file.Close()
+		entries, err := os.ReadDir(dirPath)
+		if err != nil {
+			Log("warning", fmt.Sprintf("Failed to read directory %s: %v", dirPath, err))
+			continue
+		}
 
-			byteValue, err := io.ReadAll(file)
-			if err != nil {
-				return err
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasPrefix(entry.Name(), "meta_") || !strings.HasSuffix(entry.Name(), ".json") {
+				continue
 			}
+
+			// Efficiently filter by filename before reading file
+			fileNameTimestampStr := strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "meta_"), ".json")
+			fileTime, err := time.Parse("20060102_150405", fileNameTimestampStr)
+			if err != nil {
+				continue // Skip files with malformed names
+			}
+
+			if fileTime.Before(tStart) || fileTime.After(tEnd) {
+				continue // Skip files outside the precise time range
+			}
+
+			// File is within range, now read and process it
+			fullPath := filepath.Join(dirPath, entry.Name())
+			jsonFile, err := os.Open(fullPath)
+			if err != nil {
+				Log("warning", fmt.Sprintf("Failed to open file %s: %v", fullPath, err))
+				continue
+			}
+
+			byteValue, _ := io.ReadAll(jsonFile)
+			jsonFile.Close() // Close file immediately after reading
 
 			var fileData FileData
-
-			if err = json.Unmarshal(byteValue, &fileData); err != nil {
-				return fmt.Errorf("error parsing JSON from file %s: %w", path, err)
+			if err := json.Unmarshal(byteValue, &fileData); err != nil {
+				Log("warning", fmt.Sprintf("Error parsing JSON from file %s: %v", fullPath, err))
+				continue
 			}
 
-			// Sort objects by FileData.MotionStart value
-			sort.Slice(data, func(i, j int) bool {
-				startI, err := time.Parse(time.RFC3339, data[i].MotionStart)
-				if err != nil {
-					log.Fatal(err)
-				}
-				startJ, err := time.Parse(time.RFC3339, data[j].MotionStart)
-				if err != nil {
-					log.Fatal(err)
-				}
-				return startI.After(startJ)
-			})
+			// Prepend the date directory to paths for frontend URL construction (using '/' for URLs)
+			for i, snapshot := range fileData.Snapshots {
+				fileData.Snapshots[i] = dateStr + "/" + snapshot
+			}
+			videoWithDate := dateStr + "/" + fileData.VideoFile
 
-			// Check if .mp4 version of the file exists and replace VideoFile with it
-			mp4FilePath := strings.TrimSuffix(fileData.VideoFile, filepath.Ext(fileData.VideoFile)) + ".mp4"
-			if _, err := os.Stat(folder + "/" + mp4FilePath); err == nil {
-				// If it exists, serve the .mp4 version instead
-				// Log("debug", fmt.Sprintf("Serving .mp4 file: %s", mp4FilePath))
-				fileData.VideoFile = mp4FilePath // Replace with .mp4 file path
+			// Check for MP4 version by checking the filesystem path
+			mp4FilePathInFS := filepath.Join(basePath, dateStr, strings.TrimSuffix(fileData.VideoFile, filepath.Ext(fileData.VideoFile))+".mp4")
+			if _, err := os.Stat(mp4FilePathInFS); err == nil {
+				// Use the mp4 path for the frontend URL
+				fileData.VideoFile = dateStr + "/" + strings.TrimSuffix(fileData.VideoFile, filepath.Ext(fileData.VideoFile)) + ".mp4"
+			} else {
+				fileData.VideoFile = videoWithDate
 			}
 
 			data = append(data, fileData)
 		}
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
 	}
+
+	// Sort final results by motion start time, descending
+	sort.Slice(data, func(i, j int) bool {
+		startI, _ := time.Parse(time.RFC3339, data[i].MotionStart)
+		startJ, _ := time.Parse(time.RFC3339, data[j].MotionStart)
+		return startI.After(startJ)
+	})
 
 	return data, nil
 }
@@ -196,25 +218,17 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Strip all punctuation
-	prompt = strings.Map(func(r rune) rune {
-		if strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 : ", r) {
+	// Strip all punctuation for tag parsing later
+	promptKeywords := strings.Map(func(r rune) rune {
+		if strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ", r) {
 			return r
 		}
 		return -1
 	}, prompt)
 
-	// fmt.Printf("prompt: %s\n", prompt)
 	Log("info", fmt.Sprintf("Prompt: %s", prompt))
 
-	data, err := loadData(mediaPath)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	Log("debug", fmt.Sprintf("Loaded %d files", len(data)))
-
+	// 1. Parse date range from the prompt first
 	tStart, tEnd, err := ParseDateRangePrompt(prompt)
 	if err != nil {
 		Log("error", fmt.Sprintf("Error parsing date range prompt: %s", err))
@@ -225,9 +239,20 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 	Log("info", fmt.Sprintf("parsed start time: %v", tStart))
 	Log("info", fmt.Sprintf("parsed end time: %v", tEnd))
 
-	words := strings.Fields(prompt)
+	// 2. Call the new, efficient loadData with the parsed time range
+	data, err := loadData(mediaPath, tStart, tEnd)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	Log("debug", fmt.Sprintf("Loaded %d files from the specified date range", len(data)))
+
+	// 3. The rest of the logic is for filtering by keywords (tags)
+	words := strings.Fields(promptKeywords)
 	var tags []Tag
 
+	// This logic can be improved, but we'll keep it for now
+	// It iterates all loaded data just to find tags from keywords
 	for _, word := range words {
 		for _, fileData := range data {
 			if word == fileData.CameraName {
@@ -255,42 +280,34 @@ func promptHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tags = uniqueTagsList
-
 	fmt.Printf("tags: %v\n", tags)
 
+	// 4. Filter the time-filtered data by tags
 	var filteredData []FileData
-	for _, fileData := range data {
-		motionStart, err := time.Parse(time.RFC3339, fileData.MotionStart)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		if (motionStart.After(tStart) || motionStart.Equal(tStart)) && motionStart.Before(tEnd) {
-			if len(tags) == 0 {
-				filteredData = append(filteredData, fileData)
-			} else {
-				match := false
-				for _, tag := range tags {
-					if tag.Type == "camera" && fileData.CameraName == singular(tag.Tag) {
-						match = true
-						break
-					}
-					if tag.Type == "class" {
-						for _, object := range fileData.Objects {
-							if object.Class == singular(tag.Tag) {
-								match = true
-								break
-							}
+	if len(tags) == 0 {
+		filteredData = data // No tags, so return all data from the time range
+	} else {
+		for _, fileData := range data {
+			match := false
+			for _, tag := range tags {
+				if tag.Type == "camera" && fileData.CameraName == singular(tag.Tag) {
+					match = true
+					break
+				}
+				if tag.Type == "class" {
+					for _, object := range fileData.Objects {
+						if object.Class == singular(tag.Tag) {
+							match = true
+							break
 						}
-					}
-					if match {
-						break
 					}
 				}
 				if match {
-					filteredData = append(filteredData, fileData)
+					break
 				}
+			}
+			if match {
+				filteredData = append(filteredData, fileData)
 			}
 		}
 	}
