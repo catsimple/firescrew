@@ -12,7 +12,14 @@
 </head>
 
 <body>
-    <input id="promptInput" type="text" placeholder="Enter your prompt" value="today">
+    <div id="controls">
+        <input id="promptInput" type="text" placeholder="Filter by object (e.g. person, car)" value="">
+        <label for="startTimeInput">From:</label>
+        <input type="datetime-local" id="startTimeInput">
+        <label for="endTimeInput">To:</label>
+        <input type="datetime-local" id="endTimeInput">
+        <button id="filterButton">Filter</button>
+    </div>
     <div id="imageGrid" class="image-grid"></div>
     <!-- The Modal -->
     <div id="myModal" class="modal">
