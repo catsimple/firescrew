@@ -7,7 +7,6 @@ import (
 	"embed"
 	"mime/multipart"
 	_ "net/http/pprof"
-	"runtime"
 
 	_ "embed"
 	"encoding/binary"
@@ -20,7 +19,6 @@ import (
 	"image/draw"
 	"image/gif"
 	"image/jpeg"
-	"image/png"
 	"io"
 	"log"
 	"math"
@@ -38,7 +36,6 @@ import (
 	"time"
 
 	"github.com/8ff/firescrew/pkg/firescrewServe"
-	"github.com/8ff/tuna"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/goki/freetype"
 	"github.com/goki/freetype/truetype"
