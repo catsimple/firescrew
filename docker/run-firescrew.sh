@@ -25,8 +25,8 @@ if [ ! -f "$BINARY_PATH" ]; then
 fi
 
 # Check if there is a new version of the binary available
-echo "[+] Checking for updates..."
-${BINARY_PATH} update
+#echo "[+] Checking for updates..."
+#${BINARY_PATH} update
 
 # Check if the first and only parameter is "demo"
 if [ "$#" -eq 1 ] && [ "$1" = "demo" ]; then
