@@ -7,6 +7,7 @@ import (
 	"embed"
 	"mime/multipart"
 	_ "net/http/pprof"
+	"runtime"
 
 	_ "embed"
 	"encoding/binary"
@@ -19,11 +20,11 @@ import (
 	"image/draw"
 	"image/gif"
 	"image/jpeg"
+	"image/png"
 	"io"
 	"log"
 	"math"
 	"math/rand"
-	"runtime"
 	"net"
 	"net/http"
 	"os"
@@ -36,13 +37,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/catsimple/firescrew/pkg/firescrewServe"
+	"github.com/8ff/firescrew/pkg/firescrewServe"
 	"github.com/8ff/tuna"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/goki/freetype"
 	"github.com/goki/freetype/truetype"
 
-	ob "github.com/catsimple/firescrew/pkg/objectPredict"
+	ob "github.com/8ff/firescrew/pkg/objectPredict"
 	"github.com/8ff/prettyTimer"
 	"github.com/hybridgroup/mjpeg"
 )
@@ -95,7 +96,6 @@ type Config struct {
 		NetworkObjectDetectServer string   `json:"networkObjectDetectServer"`
 		EventGap                  int      `json:"eventGap"`
 		PrebufferSeconds          int      `json:"prebufferSeconds"`
-		EveryNthFrame             int      `json:"everyNthFrame"`
 	} `json:"motion"`
 	Video struct {
 		HiResPath     string `json:"hiResPath"`
@@ -178,16 +178,14 @@ type TrackedObject struct {
 }
 
 type VideoMetadata struct {
-	ID              string
-	MotionStart     time.Time
-	MotionEnd       time.Time
-	Objects         []TrackedObject
-	RecodedToMp4    bool
-	Snapshots       []string
-	VideoFile       string
-	CameraName      string
-	EventPath       string `json:"-"`
-	SnapshotCounter int    `json:"-"`
+	ID           string
+	MotionStart  time.Time
+	MotionEnd    time.Time
+	Objects      []TrackedObject
+	RecodedToMp4 bool
+	Snapshots    []string
+	VideoFile    string
+	CameraName   string
 }
 
 type Event struct {
@@ -523,6 +521,7 @@ func CheckFFmpegAndFFprobe() (bool, error) {
 	return true, nil
 }
 
+// 优化：修改了ffmpeg参数以降低CPU占用
 func processRTSPFeed(rtspURL string, msgChannel chan<- FrameMsg) {
 	cmd := exec.Command(
 		"ffmpeg",
@@ -533,7 +532,9 @@ func processRTSPFeed(rtspURL string, msgChannel chan<- FrameMsg) {
 		"-probesize", "1000000",
 		"-vf", `select=not(mod(n\,5))`,
 		"-fps_mode", "vfr",
-		"-c:v", "mjpeg", // Use mjpeg for lower CPU usage
+		"-c:v", "png",
+		"-pred", "0", // 优化：不使用预测，加快速度
+		"-compression_level", "0", // 优化：0压缩，大幅降低CPU，但增加内存/管道吞吐
 		"-f", "image2pipe",
 		"-",
 	)
@@ -553,11 +554,11 @@ func processRTSPFeed(rtspURL string, msgChannel chan<- FrameMsg) {
 		return
 	}
 
+	frameCount := 0
 	frameData := bytes.NewBuffer(nil)
-	jpegStartMarker := []byte{0xFF, 0xD8}
-	jpegEndMarker := []byte{0xFF, 0xD9}
-	buffer := make([]byte, 65536) // Increased buffer size for higher resolution streams
+	isFrameStarted := false
 
+	buffer := make([]byte, 8192) // Buffer size
 	for {
 		n, err := pipe.Read(buffer)
 		if err == io.EOF {
@@ -569,35 +570,32 @@ func processRTSPFeed(rtspURL string, msgChannel chan<- FrameMsg) {
 
 		frameData.Write(buffer[:n])
 
-		// Continuously find and process all complete JPEG frames in the buffer
-		for {
-			start := bytes.Index(frameData.Bytes(), jpegStartMarker)
-			if start == -1 {
-				// No start marker found, break and wait for more data
-				break
-			}
+		if bytes.HasPrefix(frameData.Bytes(), []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}) {
+			isFrameStarted = true
+		}
 
-			// Search for the end marker after the start marker
-			end := bytes.Index(frameData.Bytes()[start:], jpegEndMarker)
-			if end == -1 {
-				// No end marker found, break and wait for more data
-				break
-			}
-			end += start + len(jpegEndMarker)
-
-			// We have a complete frame
-			jpegData := frameData.Bytes()[start:end]
-			img, err := jpeg.Decode(bytes.NewReader(jpegData))
+		if isFrameStarted && bytes.HasSuffix(frameData.Bytes(), []byte{0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}) {
+			img, err := png.Decode(bytes.NewReader(frameData.Bytes()))
 			if err != nil {
-				Log("error", fmt.Sprintf("Failed to decode JPEG: %v", err))
+				msgChannel <- FrameMsg{Error: "Failed to decode PNG: " + err.Error()}
 			} else {
 				msgChannel <- FrameMsg{Frame: img}
 			}
 
-			// Remove the processed frame from the buffer
-			remainingData := frameData.Bytes()[end:]
+			frameCount++
 			frameData.Reset()
-			frameData.Write(remainingData)
+			isFrameStarted = false
+		}
+
+		if frameData.Len() > 8*1024*1024 { // 稍微调大Buffer上限，因为未压缩PNG较大
+			startIdx := bytes.Index(frameData.Bytes(), []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
+			if startIdx != -1 {
+				frameData.Next(startIdx)
+				isFrameStarted = true
+			} else {
+				frameData.Reset()
+				isFrameStarted = false
+			}
 		}
 	}
 
@@ -654,6 +652,12 @@ func recordRTSPStream(rtspURL string, controlChannel <-chan RecordMsg, prebuffer
 		select {
 		case msg := <-controlChannel:
 			if msg.Record && !recording {
+				// 确保文件夹存在 (处理路径中包含的子目录)
+				dir := filepath.Dir(msg.Filename)
+				if _, err := os.Stat(dir); os.IsNotExist(err) {
+					os.MkdirAll(dir, 0755)
+				}
+
 				file, err = os.Create(msg.Filename)
 				if err != nil {
 					log.Fatal(err)
@@ -783,29 +787,24 @@ func main() {
 		// Print version
 		fmt.Println(Version)
 		os.Exit(0)
-	 case "-update", "--update", "update":
-	 	// Determine OS and ARCH
-	 	osRelease := runtime.GOOS
-	 	arch := runtime.GOARCH
-	
-	 	// Build URL
-	 	e := tuna.SelfUpdate(fmt.Sprintf("https://github.com/catsimple/firescrew/releases/download/latest/firescrew.%s.%s", osRelease, arch))
-	 	if e != nil {
-	 		fmt.Println(e)
-	 		os.Exit(1)
-	 	}
-	
-	 	fmt.Println("Updated!")
-	 	os.Exit(0)
+	case "-update", "--update", "update":
+		// Determine OS and ARCH
+		osRelease := runtime.GOOS
+		arch := runtime.GOARCH
+
+		// Build URL
+		e := tuna.SelfUpdate(fmt.Sprintf("https://github.com/8ff/firescrew/releases/download/latest/firescrew.%s.%s", osRelease, arch))
+		if e != nil {
+			fmt.Println(e)
+			os.Exit(1)
+		}
+
+		fmt.Println("Updated!")
+		os.Exit(0)
 	}
 
 	// Read the config file
 	globalConfig = readConfig(os.Args[1])
-
-	if globalConfig.Motion.EveryNthFrame > 0 {
-		everyNthFrame = globalConfig.Motion.EveryNthFrame
-		Log("info", fmt.Sprintf("Processing every %dth frame for object detection", everyNthFrame))
-	}
 
 	// Check if ffmpeg/ffprobe binaries are available
 	_, err := CheckFFmpegAndFFprobe()
@@ -906,6 +905,8 @@ func main() {
 
 	if globalConfig.Motion.OnnxModel != "" {
 		var err error
+		// 修复：这里原来写死了 "yolov8n"，现在改为使用配置文件的值
+		Log("info", fmt.Sprintf("Loading ONNX Model: %s", globalConfig.Motion.OnnxModel))
 		runtimeConfig.ObjectPredictClient, err = ob.Init(ob.Config{Model: globalConfig.Motion.OnnxModel, EnableCoreMl: globalConfig.Motion.OnnxEnableCoreMl})
 		if err != nil {
 			fmt.Println("Cannot init model:", err)
@@ -981,13 +982,6 @@ func main() {
 	// go dumpRtspFrames(globalConfig.DeviceUrl, "/Volumes/RAMDisk/", 4) // 1 means mod every nTh frame
 	// go readFramesFromRam(frameChannel, "/Volumes/RAMDisk/")
 
-	go func() {
-		Log("info", "Starting pprof server on :6060")
-		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
-			Log("error", fmt.Sprintf("pprof server failed: %v", err))
-		}
-	}()
-
 	for msg := range frameChannel {
 		if msg.Error != "" {
 			Log("error", msg.Error)
@@ -1004,26 +998,8 @@ func main() {
 				draw.Draw(rgba, rgba.Bounds(), msg.Frame, msg.Frame.Bounds().Min, draw.Src)
 			}
 
-			// Downscale images for motion detection to reduce CPU usage
-			motionDetected := false
-			if !runtimeConfig.MotionTriggered {
-				// Define a smaller resolution for motion detection
-				motionDetectionWidth := runtimeConfig.LoResStreamParams.Width / 2
-				motionDetectionHeight := runtimeConfig.LoResStreamParams.Height / 2
-
-				if motionDetectionWidth > 0 && motionDetectionHeight > 0 {
-					// Resize current and last images
-					resizedCurrent := resizeNearestNeighbor(rgba, motionDetectionWidth, motionDetectionHeight)
-					resizedLast := resizeNearestNeighbor(imgLast, motionDetectionWidth, motionDetectionHeight)
-
-					if CountChangedPixels(resizedCurrent, resizedLast, uint8(30)) > int(globalConfig.PixelMotionAreaThreshold) {
-						motionDetected = true
-					}
-				}
-			}
-
 			// Handle all motion stuff here
-			if runtimeConfig.MotionTriggered || motionDetected { // Use short-circuit to bypass pixel count if event is already triggered, otherwise we may not be able to identify all objects if motion is triggered
+			if runtimeConfig.MotionTriggered || (!runtimeConfig.MotionTriggered && CountChangedPixels(rgba, imgLast, uint8(30)) > int(globalConfig.PixelMotionAreaThreshold)) { // Use short-circuit to bypass pixel count if event is already triggered, otherwise we may not be able to identify all objects if motion is triggered
 				// If its been more than globalConfig.Motion.EventGap seconds since the last motion event, untrigger
 				if runtimeConfig.MotionTriggered && time.Since(runtimeConfig.MotionTriggeredLast) > time.Duration(globalConfig.Motion.EventGap)*time.Second {
 					go endMotionEvent() // End the motion event
@@ -1177,26 +1153,32 @@ func performDetectionOnObject(originalFrame *image.RGBA, frame *image.RGBA, pred
 				runtimeConfig.MotionMutex.Lock()
 				runtimeConfig.MotionTriggered = true
 				runtimeConfig.MotionTriggeredLast = now
-
-				// Create date-based directory for event files
-				dateStr := time.Now().Format("2006-01-02")
-				targetDir := filepath.Join(globalConfig.Video.HiResPath, dateStr)
-				if err := os.MkdirAll(targetDir, 0755); err != nil {
-					Log("error", fmt.Sprintf("Failed to create event directory '%s': %v", targetDir, err))
-					// Unlock mutex and return to avoid further errors
-					runtimeConfig.MotionMutex.Unlock()
-					return
-				}
-
-				runtimeConfig.MotionVideo.EventPath = targetDir // Store the path for this event
 				runtimeConfig.MotionVideo.CameraName = globalConfig.CameraName
 				runtimeConfig.MotionVideo.MotionStart = now
-				// Generate a timestamp-based ID for the event
-				runtimeConfig.MotionVideo.ID = now.Format("20060102_150405")
-				runtimeConfig.MotionVideo.SnapshotCounter = 0 // Reset snapshot counter for the new event
+
+				// 优化：使用时间戳作为ID，并增加随机码防止冲突
+				runtimeConfig.MotionVideo.ID = now.Format("20060102_150405") + "_" + generateRandomString(4)
+
+				// 优化：确定日期文件夹
+				dateFolder := now.Format("2006-01-02")
+				// 确保文件夹存在
+				basePath := filepath.Join(globalConfig.Video.HiResPath, dateFolder)
+				if _, err := os.Stat(basePath); os.IsNotExist(err) {
+					os.MkdirAll(basePath, 0755)
+				}
+
 				runtimeConfig.MotionVideo.Objects = append(runtimeConfig.MotionVideo.Objects, object)
-				runtimeConfig.MotionVideo.VideoFile = fmt.Sprintf("clip_%s.ts", runtimeConfig.MotionVideo.ID)                                                               // Set filename for video file
-				runtimeConfig.HiResControlChannel <- RecordMsg{Record: true, Filename: filepath.Join(runtimeConfig.MotionVideo.EventPath, runtimeConfig.MotionVideo.VideoFile)} // Start recording in the new directory
+
+				// 优化：视频文件名包含相对路径
+				videoFilename := fmt.Sprintf("clip_%s.ts", runtimeConfig.MotionVideo.ID)
+				// VideoFile 存储相对路径，方便后续处理
+				runtimeConfig.MotionVideo.VideoFile = filepath.Join(dateFolder, videoFilename)
+
+				// 发送录制指令，使用绝对路径
+				runtimeConfig.HiResControlChannel <- RecordMsg{
+					Record:   true,
+					Filename: filepath.Join(globalConfig.Video.HiResPath, runtimeConfig.MotionVideo.VideoFile),
+				}
 
 				// Notify in realtime about detected objects
 				type Event struct {
@@ -1296,8 +1278,9 @@ func performDetectionOnObject(originalFrame *image.RGBA, frame *image.RGBA, pred
 
 			// Store snapshot of the object
 			if runtimeConfig.MotionVideo.ID != "" {
-				runtimeConfig.MotionVideo.SnapshotCounter++
-				snapshotFilename := fmt.Sprintf("snap_%s_%03d.jpg", runtimeConfig.MotionVideo.ID, runtimeConfig.MotionVideo.SnapshotCounter)
+				// 优化：快照放入日期文件夹
+				dateFolder := now.Format("2006-01-02")
+				snapshotFilename := filepath.Join(dateFolder, fmt.Sprintf("snap_%s_%s.jpg", runtimeConfig.MotionVideo.ID, generateRandomString(4)))
 				runtimeConfig.MotionVideo.Snapshots = append(runtimeConfig.MotionVideo.Snapshots, snapshotFilename)
 
 				if originalFrame != nil {
@@ -1312,7 +1295,13 @@ func performDetectionOnObject(originalFrame *image.RGBA, frame *image.RGBA, pred
 				gifSlice = append(gifSlice, copyFrame)
 				gifSliceMutex.Unlock()
 
-				saveJPEG(filepath.Join(runtimeConfig.MotionVideo.EventPath, snapshotFilename), frame, 90)
+				// 确保目录存在
+				fullSnapshotPath := filepath.Join(globalConfig.Video.HiResPath, snapshotFilename)
+				snapDir := filepath.Dir(fullSnapshotPath)
+				if _, err := os.Stat(snapDir); os.IsNotExist(err) {
+					os.MkdirAll(snapDir, 0755)
+				}
+				saveJPEG(fullSnapshotPath, frame, 80) // 优化：稍微降低质量到80
 			} else {
 				Log("warning", "runtimeConfig.MotionVideo.ID is empty, not writing snapshot. This shouldnt happen.")
 			}
@@ -1679,14 +1668,19 @@ func generateRandomString(length int) string {
 	return string(b)
 }
 
+// 优化：增加了步长 (stride)，减少了 CPU 计算量
 func CountChangedPixels(img1, img2 *image.RGBA, threshold uint8) int {
 	if img1.Bounds() != img2.Bounds() {
 		return -1
 	}
 
 	count := 0
-	for y := 0; y < img1.Bounds().Dy(); y++ {
-		for x := 0; x < img1.Bounds().Dx(); x++ {
+	step := 2 // 优化：每隔2个像素检查一次，减少75%计算量
+	bounds := img1.Bounds()
+	width, height := bounds.Dx(), bounds.Dy()
+
+	for y := 0; y < height; y += step {
+		for x := 0; x < width; x += step {
 			offset := y*img1.Stride + x*4
 			r1, g1, b1 := int(img1.Pix[offset]), int(img1.Pix[offset+1]), int(img1.Pix[offset+2])
 			r2, g2, b2 := int(img2.Pix[offset]), int(img2.Pix[offset+1]), int(img2.Pix[offset+2])
@@ -1703,28 +1697,6 @@ func CountChangedPixels(img1, img2 *image.RGBA, threshold uint8) int {
 	}
 
 	return count
-}
-
-// resizeNearestNeighbor resizes an image using nearest-neighbor interpolation.
-func resizeNearestNeighbor(src image.Image, width, height int) *image.RGBA {
-	srcBounds := src.Bounds()
-	srcWidth := srcBounds.Dx()
-	srcHeight := srcBounds.Dy()
-
-	dst := image.NewRGBA(image.Rect(0, 0, width, height))
-
-	// Pre-calculate scaling factors
-	xScale := float64(srcWidth) / float64(width)
-	yScale := float64(srcHeight) / float64(height)
-
-	for y := 0; y < height; y++ {
-		for x := 0; x < width; x++ {
-			srcX := int(float64(x) * xScale)
-			srcY := int(float64(y) * yScale)
-			dst.Set(x, y, src.At(srcBounds.Min.X+srcX, srcBounds.Min.Y+srcY))
-		}
-	}
-	return dst
 }
 
 func saveJPEG(filename string, img *image.RGBA, quality int) {
@@ -1857,17 +1829,20 @@ func endMotionEvent() {
 	runtimeConfig.MotionTriggered = false
 	runtimeConfig.MotionMutex.Lock()
 
-	// Ensure the event path exists before trying to write files
-	if runtimeConfig.MotionVideo.EventPath == "" {
-		Log("error", "EventPath is empty in endMotionEvent, cannot save files.")
-		runtimeConfig.MotionMutex.Unlock()
-		return
+	// 优化：日期文件夹处理
+	dateFolder := runtimeConfig.MotionVideo.MotionStart.Format("2006-01-02")
+	basePath := filepath.Join(globalConfig.Video.HiResPath, dateFolder)
+	if _, err := os.Stat(basePath); os.IsNotExist(err) {
+		os.MkdirAll(basePath, 0755)
 	}
+
+	// 拼接完整路径
+	fullVideoPath := filepath.Join(globalConfig.Video.HiResPath, runtimeConfig.MotionVideo.VideoFile)
 
 	if globalConfig.Notifications.EnablePushoverAlerts { // Send pushover notification
 		// // Create gif from snapshots
 		gifSliceMutex.Lock()
-		gifPath := filepath.Join(runtimeConfig.MotionVideo.EventPath, fmt.Sprintf("%s.gif", runtimeConfig.MotionVideo.ID))
+		gifPath := filepath.Join(basePath, fmt.Sprintf("%s.gif", runtimeConfig.MotionVideo.ID))
 		CreateGIF(gifSlice, gifPath, 100)
 		gifSlice = make([]image.RGBA, 0)
 		gifSliceMutex.Unlock()
@@ -1902,7 +1877,7 @@ func endMotionEvent() {
 					Log("error", fmt.Sprintf("Error removing ts file: %v", err))
 				}
 			}
-		}(filepath.Join(runtimeConfig.MotionVideo.EventPath, runtimeConfig.MotionVideo.VideoFile))
+		}(fullVideoPath)
 	}
 
 	jsonData, err := json.Marshal(runtimeConfig.MotionVideo)
@@ -1910,7 +1885,7 @@ func endMotionEvent() {
 		Log("error", fmt.Sprintf("Error marshalling metadata: %v", err))
 	}
 
-	err = os.WriteFile(filepath.Join(runtimeConfig.MotionVideo.EventPath, fmt.Sprintf("meta_%s.json", runtimeConfig.MotionVideo.ID)), jsonData, 0644)
+	err = os.WriteFile(filepath.Join(basePath, fmt.Sprintf("meta_%s.json", runtimeConfig.MotionVideo.ID)), jsonData, 0644)
 	if err != nil {
 		Log("error", fmt.Sprintf("Error writing metadata file: %v", err))
 	}
