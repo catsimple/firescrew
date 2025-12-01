@@ -181,3 +181,38 @@ body {
         /* Includes padding and border in the element's total width */
     }
 }
+
+#controls {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 15px;
+    gap: 10px;
+    background-color: #333;
+    flex-wrap: wrap;
+    border-bottom: 1px solid #444;
+}
+
+#controls input, #controls button {
+    font-size: 1em;
+    padding: 8px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background-color: #222;
+    color: #eee;
+}
+
+#controls label {
+    font-size: 1em;
+    color: #ccc;
+}
+
+#controls button {
+    cursor: pointer;
+    background-color: #448aff;
+    border-color: #448aff;
+}
+
+#controls button:hover {
+    background-color: #5b9dff;
+}
