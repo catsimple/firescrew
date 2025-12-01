@@ -1,218 +1,217 @@
 body {
-    background: #292727;
-    font-family: Arial, sans-serif;
+    background: #1a1a1a;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #eee;
+    margin: 0;
+    padding: 0;
+}
+
+/* 控制栏区域 */
+.controls-wrapper {
+    background-color: #252525;
+    padding: 15px;
+    border-bottom: 1px solid #333;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+    align-items: center;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+}
+
+.date-group {
+    display: flex;
+    gap: 15px;
+    justify-content: center;
+    flex-wrap: wrap;
+    align-items: center;
+}
+
+.date-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.date-label {
+    color: #888;
+    font-size: 0.85rem;
+    font-weight: bold;
+}
+
+.date-input {
+    background: #333;
+    color: #fff;
+    border: 1px solid #444;
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-family: monospace;
+    outline: none;
+}
+
+.search-row {
+    display: flex;
+    width: 100%;
+    max-width: 800px;
+    gap: 10px;
 }
 
 #promptInput {
-    display: block;
-    width: 50%;
-    max-width: 600px;
-    margin: 0 auto;
+    flex-grow: 1;
     padding: 10px;
+    border-radius: 6px;
+    border: 1px solid #444;
+    background-color: #333;
+    color: #fff;
     font-size: 1rem;
-    border-radius: 4px;
-    border: 2px solid #444;
-    background-color: #222;
-    color: #eee;
     outline: none;
-    transition: border-color 0.3s;
 }
 
-#promptInput:focus {
+#promptInput:focus, .date-input:focus {
     border-color: #448aff;
 }
 
+.btn {
+    padding: 0 25px;
+    background-color: #448aff;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: bold;
+    transition: background 0.2s;
+}
+
+.btn:hover {
+    background-color: #2962ff;
+}
+
+/* 图片网格 */
 .image-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
     gap: 20px;
     padding: 20px;
-    box-sizing: border-box;
     margin: 0 auto;
+    max-width: 1600px;
 }
 
-.image-grid img {
+/* 单个卡片 */
+.image-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background: #252525;
+    padding: 10px;
+    border-radius: 8px;
+    transition: transform 0.2s;
+}
+
+.image-wrapper:hover {
+    transform: translateY(-5px);
+    background: #2a2a2a;
+}
+
+.image-wrapper img {
     width: 100%;
     height: auto;
-    border-radius: 10px;
-    box-shadow: 0px 2px 6px rgba(0, 0, 0, 0.1);
-    transition: all 0.3s ease;
+    border-radius: 6px;
     cursor: pointer;
+    display: block;
 }
 
-.image-grid img:hover {
-    transform: scale(1.05);
-    box-shadow: 0px 2px 16px rgba(0, 0, 0, 0.2);
+/* 图标栏 */
+.icons {
+    display: flex;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 8px;
+    font-size: 1.1rem;
 }
 
-/* The Modal (background) */
+.objectIcon {
+    color: rgba(255, 136, 0, 0.9);
+}
+
+/* 新增：时间标签 */
+.time-label {
+    margin-top: 5px;
+    font-size: 0.8rem;
+    color: #999;
+    font-family: 'Consolas', 'Monaco', monospace;
+    letter-spacing: 0.5px;
+}
+
+/* 模态框 (Video Player) */
 .modal {
     display: none;
-    /* Hidden by default */
     position: fixed;
-    /* Stay in place */
-    z-index: 1;
-    /* Sit on top */
-    padding-top: 50px;
-    /* Location of the box */
+    z-index: 200;
     left: 0;
     top: 0;
     width: 100%;
-    /* Full width */
     height: 100%;
-    /* Full height */
-    overflow: auto;
-    /* Enable scroll if needed */
-    background-color: rgb(0, 0, 0);
-    /* Fallback color */
-    background-color: rgba(0, 0, 0, 0.4);
-    /* Black w/ opacity */
+    background-color: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(5px);
 }
 
-/* Modal Content */
 .modal-content {
-    background-color: #292727;
-    margin: auto;
+    background-color: #1a1a1a;
+    margin: 5% auto;
     padding: 20px;
-    border: 1px solid #888;
+    border: 1px solid #444;
     width: 80%;
+    max-width: 1000px;
     text-align: center;
-    border-radius: 5px;
+    border-radius: 10px;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.5);
 }
 
-/* The Close Button */
 .close {
     color: #aaa;
     float: right;
     font-size: 28px;
     font-weight: bold;
-}
-
-.close:hover,
-.close:focus {
-    color: black;
-    text-decoration: none;
     cursor: pointer;
 }
 
-/* Video Player */
+.close:hover { color: #fff; }
+
 #videoPlayer {
-    max-width: 100%;
-    max-height: 80vh;
+    width: 100%;
+    max-height: 70vh;
+    margin-top: 10px;
+    background: #000;
+    border-radius: 4px;
 }
 
 #eventInfo {
+    text-align: left;
     margin-bottom: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
 }
 
 .infoLabel {
-    border: 1px solid rgb(221, 126, 17);
-    border-radius: 10px;
-    padding: 5px;
-    background-color: rgba(221, 126, 17, 0.253);
-    margin: 5px;
-    color: rgb(222, 212, 212);
-}
-
-.infoLabelTime {
-    border: 1px solid rgb(221, 211, 17);
-    background-color: rgba(221, 211, 17, 0.253);
-}
-
-.infoLabelCameraName {
-    border: 1px solid rgb(221, 17, 116);
-    background-color: rgba(221, 17, 116, 0.253);
-}
-
-.infoLabelEventID {
-    border: 1px solid rgb(17, 187, 221);
-    background-color: rgba(17, 187, 221, 0.253);
-}
-
-
-/* Card background Hue */
-#imageGrid img {
-    padding: 5px;
-    border-radius: 5px;
-    position: relative;
-    box-shadow: 0 0 15px 5px currentColor;
-}
-
-
-.image-wrapper {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-}
-
-.icons {
-    display: flex;
-    justify-content: center;
-    gap: 5px;
-}
-
-.objectIcon {
-    color: rgba(255, 87, 0, 0.8);
-    margin-top: 5px;
-}
-
-
-/* Media Queries */
-@media (max-width: 768px) {
-    #promptInput {
-        width: 90%;
-        font-size: 16px;
-    }
-
-    .modal-content {
-        width: 100%;
-    }
-
-    .image-grid {
-        grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-    }
-
-    .modal-content {
-        width: 100%;
-        max-width: 100%;
-        /* Ensures it never goes beyond the viewport */
-        margin: auto;
-        box-sizing: border-box;
-        /* Includes padding and border in the element's total width */
-    }
-}
-
-#controls {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    padding: 15px;
-    gap: 10px;
-    background-color: #333;
-    flex-wrap: wrap;
-    border-bottom: 1px solid #444;
-}
-
-#controls input, #controls button {
-    font-size: 1em;
-    padding: 8px;
+    padding: 4px 8px;
     border-radius: 4px;
+    font-size: 0.9rem;
+    background-color: #333;
     border: 1px solid #555;
-    background-color: #222;
-    color: #eee;
+    color: #ddd;
 }
+.infoLabelTime { border-color: #d4a017; background-color: rgba(212, 160, 23, 0.15); }
+.infoLabelCameraName { border-color: #d41774; background-color: rgba(212, 23, 116, 0.15); }
+.infoLabelEventID { border-color: #17bbdd; background-color: rgba(23, 187, 221, 0.15); }
 
-#controls label {
-    font-size: 1em;
-    color: #ccc;
-}
-
-#controls button {
-    cursor: pointer;
-    background-color: #448aff;
-    border-color: #448aff;
-}
-
-#controls button:hover {
-    background-color: #5b9dff;
+@media (max-width: 768px) {
+    .image-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; padding: 10px; }
+    .date-group { flex-direction: column; width: 100%; gap: 10px; }
+    .date-item { width: 100%; justify-content: space-between; }
+    .date-input { flex-grow: 1; }
+    .modal-content { width: 95%; margin: 10% auto; }
 }
