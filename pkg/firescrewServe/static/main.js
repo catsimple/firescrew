@@ -1,171 +1,220 @@
-// --- Global Variables ---
+// 全局配置
 let baseVideoUrl = "/rec/";
 let baseImageUrl = "/images/";
+
+// DOM 元素
 let imageGrid = document.getElementById('imageGrid');
 let modal = document.getElementById('myModal');
 let videoPlayer = document.getElementById('videoPlayer');
 let span = document.getElementsByClassName("close")[0];
 let eventInfo = document.getElementById('eventInfo');
-
-// UI Controls
 let promptInput = document.getElementById('promptInput');
-let quickDateSelect = document.getElementById('quickDate');
-let datePicker = document.getElementById('datePicker');
+let startDateInput = document.getElementById('startDate');
+let endDateInput = document.getElementById('endDate');
 
-// --- Color Configuration ---
+// 颜色组配置
 const colorGroups = [
-    // Warm colors
-    [
-      { label: 'Red', color: 'hsla(0, 100%, 55%, 0.9)' },
-      { label: 'Light Red', color: 'hsla(15, 100%, 55%, 0.9)' },
-      { label: 'Orange', color: 'hsla(30, 100%, 55%, 0.9)' },
-      { label: 'Gold', color: 'hsla(45, 100%, 55%, 0.9)' },
-      { label: 'Gold', color: 'hsla(54, 100%, 63%, 0.9)' },
-      { label: 'Yellow', color: 'hsla(60, 100%, 55%, 0.9)' },
-    ],
-    // Cool colors
-    [
-      { label: 'Light Yellow', color: 'hsla(75, 100%, 55%, 0.9)' },
-      { label: 'Lime', color: 'hsla(90, 100%, 55%, 0.9)' },
-      { label: 'Light Green', color: 'hsla(150, 100%, 55%, 0.9)' },
-      { label: 'Cyan', color: 'hsla(180, 100%, 55%, 0.9)' },
-    ],
-    // Purples and pinks
-    [
-      { label: 'Purple', color: 'hsla(270, 100%, 55%, 0.9)' },
-      { label: 'Lavender', color: 'hsla(285, 100%, 55%, 0.9)' },
-      { label: 'Magenta', color: 'hsla(300, 100%, 55%, 0.(8))' },
-      { label: 'Pink', color: 'hsla(330, 100%, 55%, 0.9)' },
-    ],
+    [{ label: 'Red', color: 'hsla(0, 100%, 55%, 0.9)' }, { label: 'Orange', color: 'hsla(30, 100%, 55%, 0.9)' }],
+    [{ label: 'Lime', color: 'hsla(90, 100%, 55%, 0.9)' }, { label: 'Cyan', color: 'hsla(180, 100%, 55%, 0.9)' }],
+    [{ label: 'Purple', color: 'hsla(270, 100%, 55%, 0.9)' }, { label: 'Pink', color: 'hsla(330, 100%, 55%, 0.9)' }],
 ];
-
-// Randomize color groups on load
-colorGroups.forEach(group => {
-    for (let i = group.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [group[i], group[j]] = [group[j], group[i]];
-    }
-});
-
 let eventColorMap = {};
-let lastGroupIndex = -1;
-let lastTwoGroupIndices = [-1, -1];
 
-// --- Initialization ---
+// --- 初始化 ---
 window.onload = function () {
-    // Set date picker to today
-    const todayStr = new Date().toISOString().split('T')[0];
-    if(datePicker) {
-        datePicker.value = todayStr;
-    }
+    // 初始化时间选择器：今天 00:00 到 23:59
+    const now = new Date();
+    
+    // 转换为本地 ISO 格式 (yyyy-MM-ddThh:mm)
+    const toLocalISO = (date) => {
+        const offset = date.getTimezoneOffset() * 60000;
+        return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+    };
 
-    // Focus input
-    if(promptInput) {
-        promptInput.focus();
-        // Clear default value if it says "today" to avoid duplication
-        if(promptInput.value === "today") promptInput.value = "";
-    }
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    
+    const end = new Date(now);
+    end.setHours(23, 59, 59, 999);
 
-    // Initial Query
-    updateDateUI();
+    startDateInput.value = toLocalISO(start);
+    endDateInput.value = toLocalISO(end);
+
+    // 聚焦输入框并自动查询一次
+    promptInput.focus();
     queryData();
 }
 
-// --- Event Listeners ---
+// --- 核心查询逻辑 ---
 
-if(quickDateSelect) {
-    quickDateSelect.addEventListener('change', function() {
-        updateDateUI();
-        queryData();
-    });
+function queryData() {
+    // 1. 获取参数
+    // datetime-local 格式为 "2025-12-01T12:00"
+    // 后端我们需要 "2025-12-01 12:00"
+    let s = startDateInput.value.replace("T", " ");
+    let e = endDateInput.value.replace("T", " ");
+    let q = promptInput.value.trim();
+
+    // 2. 构建 API URL
+    let url = `/api?start=${encodeURIComponent(s)}&end=${encodeURIComponent(e)}&q=${encodeURIComponent(q)}`;
+    console.log("Fetching:", url);
+
+    // 显示加载中
+    imageGrid.innerHTML = '<p style="color:#888; text-align:center; grid-column:1/-1;">Loading events...</p>';
+
+    fetch(url)
+        .then(response => response.json())
+        .then(json => {
+            imageGrid.innerHTML = '';
+            
+            if (!json.data || json.data.length === 0) {
+                imageGrid.innerHTML = '<p style="color:#aaa; text-align:center; grid-column:1/-1; padding: 50px;">No events found for this period.</p>';
+                return;
+            }
+
+            // 3. 渲染数据
+            json.data.forEach(item => {
+                // 安全检查：必须有快照
+                if (!item.Snapshots || item.Snapshots.length === 0) return;
+
+                // --- 核心优化：去重 ---
+                // 每个 Event ID 只显示一张卡片，取中间的那张快照作为封面
+                let midIndex = Math.floor(item.Snapshots.length / 2);
+                let coverSnapshot = item.Snapshots[midIndex];
+
+                // 创建容器
+                let imgDiv = document.createElement('div');
+                imgDiv.classList.add("image-wrapper");
+
+                // 创建图片
+                let img = document.createElement('img');
+                img.src = baseImageUrl + coverSnapshot;
+                img.loading = "lazy"; // 懒加载，提升性能
+                
+                // 边框颜色 (基于ID哈希)
+                let color = getEventColor(item.ID);
+                img.style.boxShadow = `0 0 8px 1px ${color}`;
+
+                // --- 1. 图片 ---
+                imgDiv.appendChild(img);
+
+                // --- 2. 图标栏 ---
+                let iconsDiv = document.createElement('div');
+                iconsDiv.classList.add('icons');
+                
+                // 提取不重复的对象类型
+                if (item.Objects && item.Objects.length > 0) {
+                    let uniqueClasses = [...new Set(item.Objects.map(o => o.Class))];
+                    uniqueClasses.forEach(cls => {
+                        let icon = document.createElement('i');
+                        icon.className = getObjectIcon(cls);
+                        icon.classList.add("objectIcon");
+                        iconsDiv.appendChild(icon);
+                    });
+                }
+                imgDiv.appendChild(iconsDiv);
+
+                // --- 3. 时间标签 (新增) ---
+                let timeDiv = document.createElement('div');
+                timeDiv.classList.add('time-label');
+                // 格式化时间字符串
+                timeDiv.innerText = formatDisplayTime(item.MotionStart);
+                imgDiv.appendChild(timeDiv);
+
+                // 点击播放
+                img.addEventListener('click', function () {
+                    playVideo(item.VideoFile, baseImageUrl + coverSnapshot);
+                    showEventDetails(item);
+                });
+
+                imageGrid.appendChild(imgDiv);
+            });
+        })
+        .catch(err => {
+            console.error(err);
+            imageGrid.innerHTML = '<p style="color:red; text-align:center; grid-column:1/-1;">Error connecting to server.</p>';
+        });
 }
 
-if(datePicker) {
-    datePicker.addEventListener('change', function() {
-        queryData();
-    });
-}
-
-if(promptInput) {
-    promptInput.addEventListener('keydown', function (event) {
-        if (event.key === "Enter") {
-            event.preventDefault();
-            queryData();
+// --- 详情弹窗逻辑 ---
+function showEventDetails(item) {
+    eventInfo.innerHTML = '';
+    
+    // ID
+    addInfoLabel('ID', item.ID, "infoLabelEventID");
+    // Time
+    addInfoLabel('Time', item.MotionStart.replace("T", " ").split(".")[0], "infoLabelTime");
+    // Camera
+    addInfoLabel('Cam', item.CameraName, "infoLabelCameraName");
+    
+    // Objects Detail
+    if (item.Objects) {
+        let counts = {};
+        item.Objects.forEach(o => { counts[o.Class] = (counts[o.Class] || 0) + 1; });
+        
+        let objContainer = document.createElement('div');
+        objContainer.style.marginTop = "5px";
+        for (let [cls, count] of Object.entries(counts)) {
+            let badge = document.createElement('span');
+            badge.innerText = `${cls} (${count})`;
+            badge.className = "infoLabel";
+            badge.style.border = "1px solid #666";
+            badge.style.marginRight = "5px";
+            objContainer.appendChild(badge);
         }
-    });
+        eventInfo.appendChild(objContainer);
+    }
 }
 
-// Modal closing logic
-span.onclick = function () { closeModal(); }
-window.onclick = function (event) { if (event.target == modal) { closeModal(); } }
+// --- 辅助函数 ---
 
-
-// --- Helper Functions ---
-
-function updateDateUI() {
-    if (quickDateSelect.value === 'custom') {
-        datePicker.style.display = 'inline-block';
-    } else {
-        datePicker.style.display = 'none';
-    }
+function formatDisplayTime(rfc3339Str) {
+    // 后端返回格式: 2025-12-01T15:30:45.123456+09:00
+    // 我们只需要 2025-12-01 15:30:45
+    // 简单且稳健的方法是字符串切割
+    let parts = rfc3339Str.split('T');
+    if (parts.length < 2) return rfc3339Str;
+    
+    let datePart = parts[0];
+    let timePart = parts[1].split('.')[0]; // 去掉毫秒和时区
+    
+    // 如果是今天，只显示时间，否则显示完整日期+时间 (可选优化)
+    // 这里根据你的要求显示完整时间
+    return `${datePart} ${timePart}`;
 }
 
 function getEventColor(eventId) {
     if (!eventColorMap[eventId]) {
-        let groupIndex;
-        const maxTries = 10;
-        let tries = 0;
-
-        do {
-            groupIndex = Math.floor(Math.random() * colorGroups.length);
-            tries++;
-            if (tries > maxTries) {
-                groupIndex = (lastTwoGroupIndices[0] + 1) % colorGroups.length;
-                break;
-            }
-        } while (lastTwoGroupIndices.includes(groupIndex));
-
-        lastTwoGroupIndices[0] = lastTwoGroupIndices[1];
-        lastTwoGroupIndices[1] = groupIndex;
-
-        const colorGroup = colorGroups[groupIndex];
-        const colorIndex = Math.floor(Math.random() * colorGroup.length);
-        eventColorMap[eventId] = { color: colorGroup[colorIndex].color, index: colorIndex };
+        // 基于ID字符串生成简单的Hash颜色，保证同一个ID颜色固定
+        let hash = 0;
+        for (let i = 0; i < eventId.length; i++) {
+            hash = eventId.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        let flatColors = colorGroups.flat();
+        let index = Math.abs(hash) % flatColors.length;
+        eventColorMap[eventId] = flatColors[index].color;
     }
-    return eventColorMap[eventId].color;
+    return eventColorMap[eventId];
 }
 
-function getObjectIcon(objectType) {
-    switch (objectType) {
-        case 'car': return 'fas fa-car';
-        case 'truck': return 'fas fa-truck';
-        case 'person': return 'fas fa-user';
-        case 'bicycle': return 'fas fa-bicycle';
-        case 'motorcycle': return 'fas fa-motorcycle';
-        case 'bus': return 'fas fa-bus';
-        case 'cat': return 'fas fa-cat';
-        case 'dog': return 'fas fa-dog';
-        case 'boat': return 'fas fa-ship';
-        default: return 'fas fa-question';
-    }
+function getObjectIcon(c) {
+    c = (c || "").toLowerCase();
+    if(c.includes('car')) return 'fas fa-car';
+    if(c.includes('person')) return 'fas fa-user';
+    if(c.includes('truck')) return 'fas fa-truck';
+    if(c.includes('bus')) return 'fas fa-bus';
+    if(c.includes('cat')) return 'fas fa-cat';
+    if(c.includes('dog')) return 'fas fa-dog';
+    if(c.includes('bicycle') || c.includes('bike')) return 'fas fa-bicycle';
+    if(c.includes('motor')) return 'fas fa-motorcycle';
+    return 'fas fa-video';
 }
 
-function formatDate(dateString) {
-    let date = new Date(dateString);
-    let day = String(date.getDate()).padStart(2, '0');
-    let month = String(date.getMonth() + 1).padStart(2, '0');
-    let year = String(date.getFullYear()).slice(2);
-    let hours = String(date.getHours()).padStart(2, '0');
-    let minutes = String(date.getMinutes()).padStart(2, '0');
-    let seconds = String(date.getSeconds()).padStart(2, '0');
-    return `${day}/${month}/${year} ${hours}:${minutes}:${seconds}`;
-}
-
-function playVideo(videoFile, poster) {
+function playVideo(url, poster) {
     videoPlayer.poster = poster;
-    videoPlayer.src = baseVideoUrl + videoFile;
+    videoPlayer.src = baseVideoUrl + url;
     modal.style.display = "block";
-    videoPlayer.play();
+    videoPlayer.play().catch(e => console.log("Autoplay blocked:", e));
 }
 
 function closeModal() {
@@ -174,136 +223,14 @@ function closeModal() {
     videoPlayer.currentTime = 0;
 }
 
-function addInfoLabel(name, value, optClass) {
-    let label = document.createElement('label');
-    label.textContent = name + ': ' + value;
-    label.classList.add("infoLabel");
-    if (optClass) {
-        label.classList.add(optClass);
-    }
-    eventInfo.appendChild(label);
+function addInfoLabel(name, val, cls) {
+    let l = document.createElement('div');
+    l.innerText = `${name}: ${val}`;
+    l.className = "infoLabel " + (cls || "");
+    eventInfo.appendChild(l);
 }
 
-function addPlainLabel(value, optClass) {
-    let label = document.createElement('label');
-    label.textContent = value;
-    label.classList.add("infoLabel");
-    if (optClass) {
-        label.classList.add(optClass);
-    }
-    eventInfo.appendChild(label);
-}
-
-// --- Main Logic ---
-
-function queryData() {
-    // 1. Construct the Date Part
-    const mode = quickDateSelect.value;
-    let datePart = "";
-
-    if (mode === 'today') {
-        datePart = "today";
-    } else if (mode === 'yesterday') {
-        datePart = "yesterday";
-    } else if (mode === 'custom') {
-        const pickedDate = datePicker.value;
-        // Construct a full day range for the backend to parse
-        datePart = `from ${pickedDate} 00:00 to ${pickedDate} 23:59`;
-    }
-
-    // 2. Construct the Keyword Part
-    // Strip out any manually typed date keywords to avoid conflict
-    let keywordPart = promptInput.value.replace(/today|yesterday|from .* to .*/gi, "").trim();
-    
-    // 3. Combine
-    let finalPrompt = `${datePart} ${keywordPart}`;
-    
-    console.log("Querying API with:", finalPrompt);
-
-    // Clear grid
-    imageGrid.innerHTML = '';
-
-    fetch('/api?prompt=' + encodeURIComponent(finalPrompt))
-        .then(response => response.json())
-        .then(data => {
-            console.log('Received data:', data);
-
-            if (data && data.data) {
-                // Check if no data found
-                if (data.data.length === 0) {
-                    imageGrid.innerHTML = '<p style="color:#aaa; text-align:center; width:100%;">No events found for this period.</p>';
-                    return;
-                }
-
-                data.data.forEach(item => {
-                    item.Snapshots.forEach(snapshot => {
-                        let imgDiv = document.createElement('div');
-                        imgDiv.classList.add("image-wrapper");
-
-                        let img = document.createElement('img');
-                        img.src = baseImageUrl + snapshot;
-
-                        // Add a background color based on the event ID
-                        let color = getEventColor(item.ID);
-                        img.style.boxShadow = `0 0 6px 2px ${color}`;
-
-                        imgDiv.appendChild(img);
-
-                        // Icons
-                        let iconsDiv = document.createElement('div');
-                        iconsDiv.classList.add('icons');
-
-                        if (item.Objects && item.Objects.length > 0) {
-                            let uniqueObjects = [];
-                            item.Objects.forEach(object => {
-                                if (!uniqueObjects.includes(object.Class)) {
-                                    uniqueObjects.push(object.Class);
-                                }
-                            });
-                            uniqueObjects.forEach(objectClass => {
-                                let icon = document.createElement('i');
-                                icon.className = getObjectIcon(objectClass);
-                                icon.classList.add("objectIcon");
-                                iconsDiv.appendChild(icon);
-                            });
-                        }
-                        imgDiv.appendChild(iconsDiv);
-
-                        // Click event
-                        img.addEventListener('click', function () {
-                            playVideo(item.VideoFile, baseImageUrl + snapshot);
-                            
-                            // Populate Info Box
-                            eventInfo.innerHTML = '';
-                            addInfoLabel('ID', item.ID, "infoLabelEventID");
-                            
-                            let newDate = formatDate(item.MotionStart);
-                            addInfoLabel('T', newDate, "infoLabelTime");
-                            
-                            addInfoLabel('Cam', item.CameraName, "infoLabelCameraName");
-
-                            if (item.Objects && item.Objects.length > 0) {
-                                let uniqueObjects = [];
-                                item.Objects.forEach(object => {
-                                    if (!uniqueObjects.includes(object.Class)) {
-                                        uniqueObjects.push(object.Class);
-                                    }
-                                });
-                                uniqueObjects.forEach(object => {
-                                    addPlainLabel(object);
-                                });
-                            }
-                        });
-
-                        imageGrid.appendChild(imgDiv);
-                    });
-                });
-            } else {
-                console.error('Invalid data structure:', data);
-            }
-        })
-        .catch(error => {
-            console.error('Error:', error);
-            imageGrid.innerHTML = '<p style="color:red; text-align:center;">Error fetching data.</p>';
-        });
-}
+// --- 事件监听 ---
+span.onclick = closeModal;
+window.onclick = e => { if(e.target == modal) closeModal(); };
+promptInput.addEventListener('keydown', e => { if(e.key==="Enter") queryData(); });
