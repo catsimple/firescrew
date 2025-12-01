@@ -96,6 +96,7 @@ type Config struct {
 		NetworkObjectDetectServer string   `json:"networkObjectDetectServer"`
 		EventGap                  int      `json:"eventGap"`
 		PrebufferSeconds          int      `json:"prebufferSeconds"`
+		EveryNthFrame             int      `json:"everyNthFrame"`
 	} `json:"motion"`
 	Video struct {
 		HiResPath     string `json:"hiResPath"`
@@ -178,14 +179,16 @@ type TrackedObject struct {
 }
 
 type VideoMetadata struct {
-	ID           string
-	MotionStart  time.Time
-	MotionEnd    time.Time
-	Objects      []TrackedObject
-	RecodedToMp4 bool
-	Snapshots    []string
-	VideoFile    string
-	CameraName   string
+	ID              string
+	MotionStart     time.Time
+	MotionEnd       time.Time
+	Objects         []TrackedObject
+	RecodedToMp4    bool
+	Snapshots       []string
+	VideoFile       string
+	CameraName      string
+	EventPath       string `json:"-"`
+	SnapshotCounter int    `json:"-"`
 }
 
 type Event struct {
@@ -531,7 +534,7 @@ func processRTSPFeed(rtspURL string, msgChannel chan<- FrameMsg) {
 		"-probesize", "1000000",
 		"-vf", `select=not(mod(n\,5))`,
 		"-fps_mode", "vfr",
-		"-c:v", "png",
+		"-c:v", "mjpeg", // Use mjpeg for lower CPU usage
 		"-f", "image2pipe",
 		"-",
 	)
@@ -551,11 +554,11 @@ func processRTSPFeed(rtspURL string, msgChannel chan<- FrameMsg) {
 		return
 	}
 
-	frameCount := 0
 	frameData := bytes.NewBuffer(nil)
-	isFrameStarted := false
+	jpegStartMarker := []byte{0xFF, 0xD8}
+	jpegEndMarker := []byte{0xFF, 0xD9}
+	buffer := make([]byte, 65536) // Increased buffer size for higher resolution streams
 
-	buffer := make([]byte, 8192) // Buffer size
 	for {
 		n, err := pipe.Read(buffer)
 		if err == io.EOF {
@@ -567,32 +570,35 @@ func processRTSPFeed(rtspURL string, msgChannel chan<- FrameMsg) {
 
 		frameData.Write(buffer[:n])
 
-		if bytes.HasPrefix(frameData.Bytes(), []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}) {
-			isFrameStarted = true
-		}
+		// Continuously find and process all complete JPEG frames in the buffer
+		for {
+			start := bytes.Index(frameData.Bytes(), jpegStartMarker)
+			if start == -1 {
+				// No start marker found, break and wait for more data
+				break
+			}
 
-		if isFrameStarted && bytes.HasSuffix(frameData.Bytes(), []byte{0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82}) {
-			img, err := png.Decode(bytes.NewReader(frameData.Bytes()))
+			// Search for the end marker after the start marker
+			end := bytes.Index(frameData.Bytes()[start:], jpegEndMarker)
+			if end == -1 {
+				// No end marker found, break and wait for more data
+				break
+			}
+			end += start + len(jpegEndMarker)
+
+			// We have a complete frame
+			jpegData := frameData.Bytes()[start:end]
+			img, err := jpeg.Decode(bytes.NewReader(jpegData))
 			if err != nil {
-				msgChannel <- FrameMsg{Error: "Failed to decode PNG: " + err.Error()}
+				Log("error", fmt.Sprintf("Failed to decode JPEG: %v", err))
 			} else {
 				msgChannel <- FrameMsg{Frame: img}
 			}
 
-			frameCount++
+			// Remove the processed frame from the buffer
+			remainingData := frameData.Bytes()[end:]
 			frameData.Reset()
-			isFrameStarted = false
-		}
-
-		if frameData.Len() > 2*1024*1024 {
-			startIdx := bytes.Index(frameData.Bytes(), []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A})
-			if startIdx != -1 {
-				frameData.Next(startIdx)
-				isFrameStarted = true
-			} else {
-				frameData.Reset()
-				isFrameStarted = false
-			}
+			frameData.Write(remainingData)
 		}
 	}
 
@@ -778,24 +784,29 @@ func main() {
 		// Print version
 		fmt.Println(Version)
 		os.Exit(0)
-	case "-update", "--update", "update":
-		// Determine OS and ARCH
-		osRelease := runtime.GOOS
-		arch := runtime.GOARCH
-
-		// Build URL
-		e := tuna.SelfUpdate(fmt.Sprintf("https://github.com/8ff/firescrew/releases/download/latest/firescrew.%s.%s", osRelease, arch))
-		if e != nil {
-			fmt.Println(e)
-			os.Exit(1)
-		}
-
-		fmt.Println("Updated!")
-		os.Exit(0)
+	// case "-update", "--update", "update":
+	// 	// Determine OS and ARCH
+	// 	osRelease := runtime.GOOS
+	// 	arch := runtime.GOARCH
+	//
+	// 	// Build URL
+	// 	e := tuna.SelfUpdate(fmt.Sprintf("https://github.com/8ff/firescrew/releases/download/latest/firescrew.%s.%s", osRelease, arch))
+	// 	if e != nil {
+	// 		fmt.Println(e)
+	// 		os.Exit(1)
+	// 	}
+	//
+	// 	fmt.Println("Updated!")
+	// 	os.Exit(0)
 	}
 
 	// Read the config file
 	globalConfig = readConfig(os.Args[1])
+
+	if globalConfig.Motion.EveryNthFrame > 0 {
+		everyNthFrame = globalConfig.Motion.EveryNthFrame
+		Log("info", fmt.Sprintf("Processing every %dth frame for object detection", everyNthFrame))
+	}
 
 	// Check if ffmpeg/ffprobe binaries are available
 	_, err := CheckFFmpegAndFFprobe()
@@ -896,7 +907,7 @@ func main() {
 
 	if globalConfig.Motion.OnnxModel != "" {
 		var err error
-		runtimeConfig.ObjectPredictClient, err = ob.Init(ob.Config{Model: "yolov8n", EnableCoreMl: globalConfig.Motion.OnnxEnableCoreMl})
+		runtimeConfig.ObjectPredictClient, err = ob.Init(ob.Config{Model: globalConfig.Motion.OnnxModel, EnableCoreMl: globalConfig.Motion.OnnxEnableCoreMl})
 		if err != nil {
 			fmt.Println("Cannot init model:", err)
 			return
@@ -971,6 +982,13 @@ func main() {
 	// go dumpRtspFrames(globalConfig.DeviceUrl, "/Volumes/RAMDisk/", 4) // 1 means mod every nTh frame
 	// go readFramesFromRam(frameChannel, "/Volumes/RAMDisk/")
 
+	go func() {
+		Log("info", "Starting pprof server on :6060")
+		if err := http.ListenAndServe("localhost:6060", nil); err != nil {
+			Log("error", fmt.Sprintf("pprof server failed: %v", err))
+		}
+	}()
+
 	for msg := range frameChannel {
 		if msg.Error != "" {
 			Log("error", msg.Error)
@@ -987,8 +1005,26 @@ func main() {
 				draw.Draw(rgba, rgba.Bounds(), msg.Frame, msg.Frame.Bounds().Min, draw.Src)
 			}
 
+			// Downscale images for motion detection to reduce CPU usage
+			motionDetected := false
+			if !runtimeConfig.MotionTriggered {
+				// Define a smaller resolution for motion detection
+				motionDetectionWidth := runtimeConfig.LoResStreamParams.Width / 2
+				motionDetectionHeight := runtimeConfig.LoResStreamParams.Height / 2
+
+				if motionDetectionWidth > 0 && motionDetectionHeight > 0 {
+					// Resize current and last images
+					resizedCurrent := resizeNearestNeighbor(rgba, motionDetectionWidth, motionDetectionHeight)
+					resizedLast := resizeNearestNeighbor(imgLast, motionDetectionWidth, motionDetectionHeight)
+
+					if CountChangedPixels(resizedCurrent, resizedLast, uint8(30)) > int(globalConfig.PixelMotionAreaThreshold) {
+						motionDetected = true
+					}
+				}
+			}
+
 			// Handle all motion stuff here
-			if runtimeConfig.MotionTriggered || (!runtimeConfig.MotionTriggered && CountChangedPixels(rgba, imgLast, uint8(30)) > int(globalConfig.PixelMotionAreaThreshold)) { // Use short-circuit to bypass pixel count if event is already triggered, otherwise we may not be able to identify all objects if motion is triggered
+			if runtimeConfig.MotionTriggered || motionDetected { // Use short-circuit to bypass pixel count if event is already triggered, otherwise we may not be able to identify all objects if motion is triggered
 				// If its been more than globalConfig.Motion.EventGap seconds since the last motion event, untrigger
 				if runtimeConfig.MotionTriggered && time.Since(runtimeConfig.MotionTriggeredLast) > time.Duration(globalConfig.Motion.EventGap)*time.Second {
 					go endMotionEvent() // End the motion event
@@ -1142,13 +1178,26 @@ func performDetectionOnObject(originalFrame *image.RGBA, frame *image.RGBA, pred
 				runtimeConfig.MotionMutex.Lock()
 				runtimeConfig.MotionTriggered = true
 				runtimeConfig.MotionTriggeredLast = now
+
+				// Create date-based directory for event files
+				dateStr := time.Now().Format("2006-01-02")
+				targetDir := filepath.Join(globalConfig.Video.HiResPath, dateStr)
+				if err := os.MkdirAll(targetDir, 0755); err != nil {
+					Log("error", fmt.Sprintf("Failed to create event directory '%s': %v", targetDir, err))
+					// Unlock mutex and return to avoid further errors
+					runtimeConfig.MotionMutex.Unlock()
+					return
+				}
+
+				runtimeConfig.MotionVideo.EventPath = targetDir // Store the path for this event
 				runtimeConfig.MotionVideo.CameraName = globalConfig.CameraName
 				runtimeConfig.MotionVideo.MotionStart = now
-				// Generate random string filename for runtimeConfig.MotionVideo.Filename
-				runtimeConfig.MotionVideo.ID = generateRandomString(15)
+				// Generate a timestamp-based ID for the event
+				runtimeConfig.MotionVideo.ID = now.Format("20060102_150405")
+				runtimeConfig.MotionVideo.SnapshotCounter = 0 // Reset snapshot counter for the new event
 				runtimeConfig.MotionVideo.Objects = append(runtimeConfig.MotionVideo.Objects, object)
-				runtimeConfig.MotionVideo.VideoFile = fmt.Sprintf("clip_%s.ts", runtimeConfig.MotionVideo.ID)                                                            // Set filename for video file
-				runtimeConfig.HiResControlChannel <- RecordMsg{Record: true, Filename: filepath.Join(globalConfig.Video.HiResPath, runtimeConfig.MotionVideo.VideoFile)} // Start recording
+				runtimeConfig.MotionVideo.VideoFile = fmt.Sprintf("clip_%s.ts", runtimeConfig.MotionVideo.ID)                                                               // Set filename for video file
+				runtimeConfig.HiResControlChannel <- RecordMsg{Record: true, Filename: filepath.Join(runtimeConfig.MotionVideo.EventPath, runtimeConfig.MotionVideo.VideoFile)} // Start recording in the new directory
 
 				// Notify in realtime about detected objects
 				type Event struct {
@@ -1248,7 +1297,8 @@ func performDetectionOnObject(originalFrame *image.RGBA, frame *image.RGBA, pred
 
 			// Store snapshot of the object
 			if runtimeConfig.MotionVideo.ID != "" {
-				snapshotFilename := fmt.Sprintf("snap_%s_%s.jpg", runtimeConfig.MotionVideo.ID, generateRandomString(4))
+				runtimeConfig.MotionVideo.SnapshotCounter++
+				snapshotFilename := fmt.Sprintf("snap_%s_%03d.jpg", runtimeConfig.MotionVideo.ID, runtimeConfig.MotionVideo.SnapshotCounter)
 				runtimeConfig.MotionVideo.Snapshots = append(runtimeConfig.MotionVideo.Snapshots, snapshotFilename)
 
 				if originalFrame != nil {
@@ -1263,7 +1313,7 @@ func performDetectionOnObject(originalFrame *image.RGBA, frame *image.RGBA, pred
 				gifSlice = append(gifSlice, copyFrame)
 				gifSliceMutex.Unlock()
 
-				saveJPEG(filepath.Join(globalConfig.Video.HiResPath, snapshotFilename), frame, 100)
+				saveJPEG(filepath.Join(runtimeConfig.MotionVideo.EventPath, snapshotFilename), frame, 90)
 			} else {
 				Log("warning", "runtimeConfig.MotionVideo.ID is empty, not writing snapshot. This shouldnt happen.")
 			}
@@ -1656,6 +1706,28 @@ func CountChangedPixels(img1, img2 *image.RGBA, threshold uint8) int {
 	return count
 }
 
+// resizeNearestNeighbor resizes an image using nearest-neighbor interpolation.
+func resizeNearestNeighbor(src image.Image, width, height int) *image.RGBA {
+	srcBounds := src.Bounds()
+	srcWidth := srcBounds.Dx()
+	srcHeight := srcBounds.Dy()
+
+	dst := image.NewRGBA(image.Rect(0, 0, width, height))
+
+	// Pre-calculate scaling factors
+	xScale := float64(srcWidth) / float64(width)
+	yScale := float64(srcHeight) / float64(height)
+
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			srcX := int(float64(x) * xScale)
+			srcY := int(float64(y) * yScale)
+			dst.Set(x, y, src.At(srcBounds.Min.X+srcX, srcBounds.Min.Y+srcY))
+		}
+	}
+	return dst
+}
+
 func saveJPEG(filename string, img *image.RGBA, quality int) {
 	file, err := os.Create(filename)
 	if err != nil {
@@ -1786,20 +1858,28 @@ func endMotionEvent() {
 	runtimeConfig.MotionTriggered = false
 	runtimeConfig.MotionMutex.Lock()
 
+	// Ensure the event path exists before trying to write files
+	if runtimeConfig.MotionVideo.EventPath == "" {
+		Log("error", "EventPath is empty in endMotionEvent, cannot save files.")
+		runtimeConfig.MotionMutex.Unlock()
+		return
+	}
+
 	if globalConfig.Notifications.EnablePushoverAlerts { // Send pushover notification
 		// // Create gif from snapshots
 		gifSliceMutex.Lock()
-		CreateGIF(gifSlice, fmt.Sprintf("%s/%s.gif", globalConfig.Video.HiResPath, runtimeConfig.MotionVideo.ID), 100)
+		gifPath := filepath.Join(runtimeConfig.MotionVideo.EventPath, fmt.Sprintf("%s.gif", runtimeConfig.MotionVideo.ID))
+		CreateGIF(gifSlice, gifPath, 100)
 		gifSlice = make([]image.RGBA, 0)
 		gifSliceMutex.Unlock()
 
 		// Send pushover notification
-		err := sendPushoverNotificationGif(globalConfig.Notifications.PushoverUserKey, globalConfig.Notifications.PushoverAppToken, "Motion ended", fmt.Sprintf("%s/%s.gif", globalConfig.Video.HiResPath, runtimeConfig.MotionVideo.ID))
+		err := sendPushoverNotificationGif(globalConfig.Notifications.PushoverUserKey, globalConfig.Notifications.PushoverAppToken, "Motion ended", gifPath)
 		if err != nil {
 			Log("error", fmt.Sprintf("Error sending pushover notification: %v", err))
 		}
 		// Delete gif
-		err = os.Remove(fmt.Sprintf("%s/%s.gif", globalConfig.Video.HiResPath, runtimeConfig.MotionVideo.ID))
+		err = os.Remove(gifPath)
 		if err != nil {
 			Log("error", fmt.Sprintf("Error removing gif file: %v", err))
 		}
@@ -1823,7 +1903,7 @@ func endMotionEvent() {
 					Log("error", fmt.Sprintf("Error removing ts file: %v", err))
 				}
 			}
-		}(filepath.Join(globalConfig.Video.HiResPath, runtimeConfig.MotionVideo.VideoFile))
+		}(filepath.Join(runtimeConfig.MotionVideo.EventPath, runtimeConfig.MotionVideo.VideoFile))
 	}
 
 	jsonData, err := json.Marshal(runtimeConfig.MotionVideo)
@@ -1831,7 +1911,7 @@ func endMotionEvent() {
 		Log("error", fmt.Sprintf("Error marshalling metadata: %v", err))
 	}
 
-	err = os.WriteFile(filepath.Join(globalConfig.Video.HiResPath, fmt.Sprintf("meta_%s.json", runtimeConfig.MotionVideo.ID)), jsonData, 0644)
+	err = os.WriteFile(filepath.Join(runtimeConfig.MotionVideo.EventPath, fmt.Sprintf("meta_%s.json", runtimeConfig.MotionVideo.ID)), jsonData, 0644)
 	if err != nil {
 		Log("error", fmt.Sprintf("Error writing metadata file: %v", err))
 	}
