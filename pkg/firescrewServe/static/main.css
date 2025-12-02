@@ -6,15 +6,16 @@ body {
     padding: 0;
 }
 
-/* 控制栏区域 */
+/* --- 控制栏区域优化 --- */
 .controls-wrapper {
     background-color: #252525;
     padding: 15px;
     border-bottom: 1px solid #333;
     display: flex;
-    flex-direction: column;
-    gap: 15px;
+    /* 宽屏默认：横向排列，垂直居中 */
+    flex-direction: row; 
     align-items: center;
+    gap: 15px;
     position: sticky;
     top: 0;
     z-index: 100;
@@ -23,10 +24,11 @@ body {
 
 .date-group {
     display: flex;
-    gap: 15px;
-    justify-content: center;
-    flex-wrap: wrap;
+    gap: 10px;
     align-items: center;
+    /* 防止日期输入框换行，保持一行 */
+    flex-wrap: nowrap; 
+    flex-shrink: 0; /* 防止被搜索框挤压 */
 }
 
 .date-item {
@@ -39,22 +41,26 @@ body {
     color: #888;
     font-size: 0.85rem;
     font-weight: bold;
+    white-space: nowrap; /* 防止文字换行 */
 }
 
 .date-input {
     background: #333;
     color: #fff;
     border: 1px solid #444;
-    padding: 8px 10px;
+    padding: 8px 5px; /* 稍微减小内边距以适应移动端 */
     border-radius: 6px;
     font-family: monospace;
     outline: none;
+    font-size: 0.9rem;
 }
 
 .search-row {
     display: flex;
-    width: 100%;
-    max-width: 800px;
+    /* 宽屏下：搜索框自动占据剩余空间 */
+    flex-grow: 1; 
+    width: auto;
+    max-width: 800px; /* 限制最大宽度，避免在大屏上太长 */
     gap: 10px;
 }
 
@@ -74,7 +80,7 @@ body {
 }
 
 .btn {
-    padding: 0 25px;
+    padding: 0 20px;
     background-color: #448aff;
     color: white;
     border: none;
@@ -82,10 +88,41 @@ body {
     cursor: pointer;
     font-weight: bold;
     transition: background 0.2s;
+    white-space: nowrap;
 }
 
-.btn:hover {
-    background-color: #2962ff;
+.btn:hover { background-color: #2962ff; }
+
+/* --- 响应式布局 (窄屏/移动端) --- */
+@media (max-width: 768px) {
+    .controls-wrapper {
+        /* 窄屏下：变为列布局，但我们会特殊处理 date-group */
+        flex-wrap: wrap; 
+        justify-content: center;
+    }
+
+    .date-group {
+        /* 保持一行，占满宽度 */
+        width: 100%;
+        justify-content: space-between;
+    }
+    
+    .date-item {
+        /* 允许输入框在极小屏幕下稍微缩小 */
+        flex: 1;
+    }
+    
+    .date-input {
+        width: 100%; /* 输入框填满可用空间 */
+        box-sizing: border-box;
+    }
+
+    .search-row {
+        /* 搜索框换行到下一行，并占满宽度 */
+        width: 100%;
+        max-width: none;
+        order: 2; /* 确保在 date-group 之后 */
+    }
 }
 
 /* 图片网格 */
@@ -96,6 +133,14 @@ body {
     padding: 20px;
     margin: 0 auto;
     max-width: 1600px;
+}
+
+@media (max-width: 768px) {
+    .image-grid { 
+        grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); 
+        gap: 10px; 
+        padding: 10px; 
+    }
 }
 
 /* 单个卡片 */
@@ -122,7 +167,6 @@ body {
     display: block;
 }
 
-/* 图标栏 */
 .icons {
     display: flex;
     justify-content: center;
@@ -131,20 +175,16 @@ body {
     font-size: 1.1rem;
 }
 
-.objectIcon {
-    color: rgba(255, 136, 0, 0.9);
-}
+.objectIcon { color: rgba(255, 136, 0, 0.9); }
 
-/* 新增：时间标签 */
 .time-label {
     margin-top: 5px;
     font-size: 0.8rem;
     color: #999;
     font-family: 'Consolas', 'Monaco', monospace;
-    letter-spacing: 0.5px;
 }
 
-/* 模态框 (Video Player) */
+/* 模态框 */
 .modal {
     display: none;
     position: fixed;
@@ -159,10 +199,10 @@ body {
 
 .modal-content {
     background-color: #1a1a1a;
-    margin: 5% auto;
+    margin: 2% auto; /* 稍微调高一点 */
     padding: 20px;
     border: 1px solid #444;
-    width: 80%;
+    width: 90%; /* 增加宽度利用率 */
     max-width: 1000px;
     text-align: center;
     border-radius: 10px;
@@ -175,43 +215,42 @@ body {
     font-size: 28px;
     font-weight: bold;
     cursor: pointer;
+    line-height: 20px;
 }
-
 .close:hover { color: #fff; }
 
 #videoPlayer {
     width: 100%;
-    max-height: 70vh;
+    max-height: 75vh;
     margin-top: 10px;
     background: #000;
     border-radius: 4px;
 }
 
+/* --- 模态框信息栏优化 --- */
 #eventInfo {
     text-align: left;
     margin-bottom: 10px;
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    align-items: center;
+    gap: 10px; 
+    align-items: center; /* 关键：垂直居中对齐 */
+    font-size: 0.9rem;
 }
 
 .infoLabel {
     padding: 4px 8px;
     border-radius: 4px;
-    font-size: 0.9rem;
     background-color: #333;
     border: 1px solid #555;
     color: #ddd;
+    white-space: nowrap;
+    display: inline-flex;
+    align-items: center;
 }
+
+/* 颜色定义 */
 .infoLabelTime { border-color: #d4a017; background-color: rgba(212, 160, 23, 0.15); }
 .infoLabelCameraName { border-color: #d41774; background-color: rgba(212, 23, 116, 0.15); }
 .infoLabelEventID { border-color: #17bbdd; background-color: rgba(23, 187, 221, 0.15); }
-
-@media (max-width: 768px) {
-    .image-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; padding: 10px; }
-    .date-group { flex-direction: column; width: 100%; gap: 10px; }
-    .date-item { width: 100%; justify-content: space-between; }
-    .date-input { flex-grow: 1; }
-    .modal-content { width: 95%; margin: 10% auto; }
-}
+.infoLabelObject { border-color: #28a745; background-color: rgba(40, 167, 69, 0.15); } /* 新增物体样式 */
