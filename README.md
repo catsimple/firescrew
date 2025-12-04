@@ -209,65 +209,74 @@ Firescrew uses a JSON configuration file for its settings. Here is a brief expla
 
 ```json
 {
-    "cameraName": "", // This will be used in the video file metadata to identify which camera the clip belongs to
-    "deviceUrl": "", // URL of the low resolution video feed.
-        "loStreamParamBypass": { // With some cameras ffprobe may not return the correct resolution, you can use this to bypass it
-        "width": 0,
-        "height": 0,
-        "fps": 0
+    "cameraName": "Backyard", // Used in metadata and notifications to identify the camera.
+    "printDebug": false, // If true, detailed debug logs will be printed to stdout.
+    
+    "deviceUrl": "rtsp://user:pass@192.168.1.10:554/stream", // URL of the LOW resolution video feed used for motion detection.
+    "loStreamParamBypass": { // Force specific parameters if ffprobe fails to detect them automatically.
+        "width": 640,
+        "height": 360,
+        "fps": 5
     },
-    "hiResDeviceUrl": "", // URL of the high resolution video feed.
-        "hiStreamParamBypass": { // With some cameras ffprobe may not return the correct resolution, you can use this to bypass it
-        "width": 0,
-        "height": 0,
-        "fps": 0
+
+    "hiResDeviceUrl": "rtsp://user:pass@192.168.1.10:554/stream_high", // URL of the HIGH resolution video feed used for recording.
+    "hiStreamParamBypass": { // Force specific parameters for the high-res stream.
+        "width": 1920,
+        "height": 1080,
+        "fps": 15
     },
-    "useEmbeddedSSDMobileNetV1Model": false, // If true, modelFile and modelConfig dont need to be specified as the embedded version of SSDMobileNetV1 will be used.
-    "modelFile": "", // Path to the .pb file of the model.
-    "modelConfig": "", // Path to the .pbtxt file of the model configuration.
-    "printDebug": false, // If true, debug information will be printed.
+
     "video": {
-        "hiResPath": "", // Path where high-resolution videos are stored.
-        "recodeTsToMp4": true, // To lower cpu usage, HI res clips are stored in original format, in order to play these clips in every browser, set this to true. After every event end, clips will be recoded to mp4.
-        "onlyRemuxMp4": true // Instead of doing re-encode, it will only remux the .mp4. This saves cpu usage and should work for most. If you are unable to play the videos in the browser, set this to false.
+        "hiResPath": "media/motion", // Directory where high-resolution video clips will be saved.
+        "recodeTsToMp4": true, // Convert .ts segments to .mp4 after recording ends (better compatibility).
+        "onlyRemuxMp4": true // If true, uses `-c copy` for fast conversion without re-encoding (low CPU). Set false if videos don't play in browser.
     },
+
     "motion": {
-        "confidenceMinThreshold": 0.3, // Minimum threshold for object detection. Range: 0.0 - 1
-        "lookForClasses": [], // Array of classes that the model should look for. Typically: ["car", "truck", "person", "bicycle", "motorcycle", "bus", "cat", "dog", "boat"]
-        "onnxModel": "yolov8n",
-        "onnxEnableCoreMl": true,
-        "embeddedObjectScript": "objectDetectServerYolo.py", // Options are objectDetectServerYolo.py (YOLOV8), objectDetectServerCoral.py (EdgeTPU Coral TPU)
-        "networkObjectDetectServer": "", // Address of the network object detection server.
-        "prebufferSeconds": 10, // Number of seconds to prebuffer before the motion event.
-        "eventGap": 30 // Gap between events in seconds.
+        "onnxModel": "yolov8n", // Name of the model to use. e.g., "yolov8n". Leave empty to use legacy objectPredict.
+        "onnxEnableCoreMl": false, // Enable CoreML hardware acceleration (macOS only).
+        "embeddedObjectScript": "objectDetectServerYolo.py", // Python script for object detection: "objectDetectServerYolo.py" or "objectDetectServerCoral.py".
+        "confidenceMinThreshold": 0.60, // Minimum confidence (0.0 - 1.0) to consider an object valid.
+        "lookForClasses": ["person", "car", "dog", "cat"], // List of object classes to trigger recording.
+        "networkObjectDetectServer": "127.0.0.1:8555", // Address of the internal or external detection server.
+        "eventGap": 10, // Seconds of silence required to end a motion event.
+        "prebufferSeconds": 5, // Seconds of video to record BEFORE motion is detected.
+        "everyNthFrame": 5, // Process every Nth frame for detection. Higher = Lower CPU usage but possible missed fast objects.
+        "generateGIF": false // If true, generates a GIF animation of the event. WARNING: High memory usage.
     },
-    "pixelMotionAreaThreshold": 50.00, // Minimum pixel motion area for an event to be triggered and passed to object detection.
-    "objectCenterMovementThreshold": 50.0, // For stationary objects, minimum distance the center of an object should move for an event to be be considered new.
-    "objectAreaThreshold": 2000.0, // For stationary objects, difference in area of a bounding box to consider object as new.
+
+    "pixelMotionAreaThreshold": 1000.0, // Minimum area of pixel changes required to trigger object detection logic.
+    "objectCenterMovementThreshold": 15.0, // Minimum distance an object center must move to be tracked as the same object.
+    "objectAreaThreshold": 1000.0, // Area difference threshold for tracking objects.
+    
     "ignoreAreasClasses": [
-        // Array of classes and corresponding coordinates that should be ignored. Coordinates can be generated using getDimensions param.
-        {"class": [], "coordinates": ""},
+        // Define areas to ignore specific objects. Coordinates: Top,Bottom,Left,Right
+        // {"class": ["car"], "coordinates": "0,100,0,200"} 
     ],
-    "streamDrawIgnoredAreas": true, // If true, ignored areas will be drawn on the stream.
-    "enableOutputStream": true, // If true, an output stream will be enabled.
-    "outputStreamAddr":, "" // Address of the output stream. Eg: 0.0.0.0:8050
-        "events": { 
-        "webhookUrl": "", // POST request will be made to this url for every event.
-        "scriptPath": "", // JSON string will be piped to STDIN of this script for every event. Example script can be found in assets/eventHandler.sh
-        "slack": {
-            "url": "" }, // JSON will be sent to this slack webhook for every event.
-        "mqtt": { // JSON will be sent to this MQTT server for every event.
-            "host": "broker.hivemq.com",
+    "streamDrawIgnoredAreas": false, // Draw red boxes around ignored areas on the MJPEG stream.
+
+    "enableOutputStream": true, // Enable the built-in MJPEG web stream.
+    "outputStreamAddr": ":8080", // Address and port for the web stream.
+
+    "events": { 
+        "mqtt": {
+            "host": "", // MQTT Broker Host (e.g., "192.168.1.50")
             "port": 1883,
             "user": "",
-            "password": "",
-            "topic": "firescrew"
-        }
+            "pass": "",
+            "topic": "firescrew/events"
+        },
+        "slack": {
+            "url": "" // Slack Webhook URL for notifications.
+        },
+        "scriptPath": "", // Path to an external script to execute on events (JSON piped to STDIN).
+        "webhookUrl": "" // URL to POST JSON event data to.
     },
+
     "notifications": {
-        "enablePushoverAlerts": true, // If true, pushover alerts will be enabled.
-        "pushoverAppToken": "", // Place your pushover App Token here for realtime notifications
-        "pushoverUserKey" :"" // Place your pushover User Key here for realtime notifications
+        "enablePushoverAlerts": false, // Enable Pushover notifications.
+        "pushoverAppToken": "", // Your Pushover App Token.
+        "pushoverUserKey": "" // Your Pushover User Key.
     }
 }
 ```
@@ -337,6 +346,15 @@ Your insights and perspectives are vital in shaping the future of Firescrew. Tog
 **Stay Updated**: For the latest updates and news, please consider following [8ffChief on Twitter](http://twitter.com/8ffChief). Stay connected and be the first to know about new features, releases, and more!
 
 ## Recent Changes
+### Release 2025-12-04
+
+#### What's Changed
+
+- **Memory and CPU Usage optimized**: There is able to controll generateGIF/everyNthFrame now, PNG compression is default to 0 for a lower cpu usage.
+- **Modern Frontend page**: NaturalDate is terrible sometimes, date selection and filters input manully is better.
+- **Better file generation logic**: For reducing the file fragment, now the event is placed to /media/motion/YYYY-MM-DD/.
+- **Faster Frontend loading**: Due to the generation logic optimization, frontend loading is faster now!
+
 ### Release 2023-08-14
 
 #### What's Changed
