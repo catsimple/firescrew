@@ -117,22 +117,31 @@ func Init(opt Config) (*Client, error) {
 		return &Client{}, fmt.Errorf("libPath does not exist: %s", client.LibPath)
 	}
 
-	// Prepare models
+	// Prepare models (Extract embedded ones anyway just in case)
 	modelTempPath, err := extractModels(models, "/tmp")
 	if err != nil {
 		return &Client{}, err
 	}
 	client.ModelBasePath = modelTempPath // Set base path for extracted models so it can be cleaned up later
 
-	switch opt.Model {
-	case "yolov8n":
-		client.ModelPath = modelTempPath + "/models/yolov8n.onnx"
-	case "yolov8s":
-		client.ModelPath = modelTempPath + "/models/yolov8s.onnx"
-	case "yolov8m":
-		client.ModelPath = modelTempPath + "/models/yolov8m.onnx"
-	default:
-		client.ModelPath = modelTempPath + "/models/yolov8n.onnx"
+	// === MODIFIED: Logic to support external model files ===
+	// Check if opt.Model is a valid local file
+	if _, err := os.Stat(opt.Model); err == nil {
+		client.ModelPath = opt.Model
+		// log.Printf("Loading external model from: %s", client.ModelPath)
+	} else {
+		// Fallback to embedded models
+		switch opt.Model {
+		case "yolov8n":
+			client.ModelPath = modelTempPath + "/models/yolov8n.onnx"
+		case "yolov8s":
+			client.ModelPath = modelTempPath + "/models/yolov8s.onnx"
+		case "yolov8m":
+			client.ModelPath = modelTempPath + "/models/yolov8m.onnx"
+		default:
+			// log.Printf("Model %s not found locally, using embedded yolov8n", opt.Model)
+			client.ModelPath = modelTempPath + "/models/yolov8n.onnx"
+		}
 	}
 
 	// Check if model file exists
@@ -180,7 +189,8 @@ func (c *Client) Predict(imgRaw image.Image) ([]Object, *image.RGBA, error) {
 		return nil, nil, fmt.Errorf("error running session: %w", err)
 	}
 
-	objects := processOutput(c.RuntimeSession.Output.GetData(), img_width, img_height)
+	// === MODIFIED: Pass model dimensions to processOutput ===
+	objects := processOutput(c.RuntimeSession.Output.GetData(), img_width, img_height, c.ModelWidth, c.ModelHeight)
 	return objects, resizedImage, nil
 }
 
@@ -240,13 +250,22 @@ func (c *Client) initSession() (ModelSession, error) {
 	blankImage := CreateBlankImage(c.ModelWidth, c.ModelHeight)
 	input, _, _, _ := c.prepareInput(blankImage)
 
-	inputShape := onnx.NewShape(1, 3, 640, 640)
+	// === MODIFIED: Dynamic Input Shape ===
+	inputShape := onnx.NewShape(1, 3, int64(c.ModelWidth), int64(c.ModelHeight))
 	inputTensor, err := onnx.NewTensor(inputShape, input)
 	if err != nil {
 		return ModelSession{}, fmt.Errorf("error creating input tensor: %w", err)
 	}
 
-	outputShape := onnx.NewShape(1, 84, 8400)
+	// === MODIFIED: Dynamic Anchor Calculation ===
+	// Calculate number of anchors based on resolution (Stride 8, 16, 32)
+	// For 640x640: 6400 + 1600 + 400 = 8400
+	// For 320x320: 1600 + 400 + 100 = 2100
+	w, h := c.ModelWidth, c.ModelHeight
+	numAnchors := (w/8)*(h/8) + (w/16)*(h/16) + (w/32)*(h/32)
+
+	// Output shape: [1, 84, numAnchors]
+	outputShape := onnx.NewShape(1, 84, int64(numAnchors))
 	outputTensor, err := onnx.NewEmptyTensor[float32](outputShape)
 	if err != nil {
 		return ModelSession{}, fmt.Errorf("error creating output tensor: %w", err)
@@ -341,13 +360,26 @@ func (c *Client) prepareInput(imageObj image.Image) ([]float32, int64, int64, *i
 	return inputArray, int64(c.ModelWidth), int64(c.ModelHeight), paddedImage
 }
 
-func processOutput(output []float32, imgWidth, imgHeight int64) []Object {
+// === MODIFIED: Dynamic Process Output logic ===
+func processOutput(output []float32, imgWidth, imgHeight int64, modelWidth, modelHeight int) []Object {
 	objects := []Object{}
 
-	for idx := 0; idx < 8400; idx++ {
+	// Calculate dynamic anchor count
+	w, h := modelWidth, modelHeight
+	numAnchors := (w/8)*(h/8) + (w/16)*(h/16) + (w/32)*(h/32)
+
+	// Safety check
+	expectedLen := 84 * numAnchors
+	if len(output) < expectedLen {
+		fmt.Printf("Warning: Output tensor size mismatch. Expected >= %d, got %d. Check Model Resolution setting.\n", expectedLen, len(output))
+		return objects
+	}
+
+	for idx := 0; idx < numAnchors; idx++ {
 		classID, probability := 0, float32(0.0)
 		for col := 0; col < 80; col++ {
-			currentProb := output[8400*(col+4)+idx]
+			// Using numAnchors as stride
+			currentProb := output[numAnchors*(col+4)+idx]
 			if currentProb > probability {
 				probability = currentProb
 				classID = col
@@ -360,11 +392,17 @@ func processOutput(output []float32, imgWidth, imgHeight int64) []Object {
 
 		label := Yolo_classes[classID]
 
-		xc, yc, w, h := output[idx], output[8400+idx], output[2*8400+idx], output[3*8400+idx]
-		x1 := (xc - w/2) / 640 * float32(imgWidth)
-		y1 := (yc - h/2) / 640 * float32(imgHeight)
-		x2 := (xc + w/2) / 640 * float32(imgWidth)
-		y2 := (yc + h/2) / 640 * float32(imgHeight)
+		// Using numAnchors as stride
+		xc := output[idx]
+		yc := output[numAnchors+idx]
+		w := output[2*numAnchors+idx]
+		h := output[3*numAnchors+idx]
+
+		// Normalize using model dimensions, not hardcoded 640
+		x1 := (xc - w/2) / float32(modelWidth) * float32(imgWidth)
+		y1 := (yc - h/2) / float32(modelHeight) * float32(imgHeight)
+		x2 := (xc + w/2) / float32(modelWidth) * float32(imgWidth)
+		y2 := (yc + h/2) / float32(modelHeight) * float32(imgHeight)
 
 		objects = append(objects, Object{ClassName: label, ClassID: classID, Confidence: probability, X1: x1, Y1: y1, X2: x2, Y2: y2})
 	}
