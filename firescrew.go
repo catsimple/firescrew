@@ -98,6 +98,8 @@ type Config struct {
 		PrebufferSeconds          int      `json:"prebufferSeconds"`
 		GenerateGIF               bool     `json:"generateGIF"`   // 控制是否生成GIF
 		EveryNthFrame             int      `json:"everyNthFrame"` // 控制跳帧检测频率
+        OnnxModelWidth            int      `json:"onnxModelWidth"`  // 新增：模型宽度
+        OnnxModelHeight           int      `json:"onnxModelHeight"` // 新增：模型高度
 	} `json:"motion"`
 	Video struct {
 		HiResPath     string `json:"hiResPath"`
@@ -916,9 +918,28 @@ func main() {
 
 	if globalConfig.Motion.OnnxModel != "" {
 		var err error
-		// 修复：这里原来写死了 "yolov8n"，现在改为使用配置文件的值
 		Log("info", fmt.Sprintf("Loading ONNX Model: %s", globalConfig.Motion.OnnxModel))
-		runtimeConfig.ObjectPredictClient, err = ob.Init(ob.Config{Model: globalConfig.Motion.OnnxModel, EnableCoreMl: globalConfig.Motion.OnnxEnableCoreMl})
+        
+        // === 新增：处理分辨率配置 ===
+        // 获取配置中的宽高
+        mWidth := globalConfig.Motion.OnnxModelWidth
+        mHeight := globalConfig.Motion.OnnxModelHeight
+
+        // 如果配置文件没写(为0)，则设置默认值
+        // 建议默认 640 (标准YOLO)，但如果你导出的模型是 320，请在 config.json 里明确写 320
+        if mWidth == 0 { mWidth = 640 }
+        if mHeight == 0 { mHeight = 640 }
+
+        Log("info", fmt.Sprintf("Model Resolution set to: %dx%d", mWidth, mHeight))
+
+        // 初始化客户端，传入宽和高
+		runtimeConfig.ObjectPredictClient, err = ob.Init(ob.Config{
+            Model:        globalConfig.Motion.OnnxModel, 
+            EnableCoreMl: globalConfig.Motion.OnnxEnableCoreMl,
+            ModelWidth:   mWidth,  // 传入宽度
+            ModelHeight:  mHeight, // 传入高度
+        })
+        
 		if err != nil {
 			fmt.Println("Cannot init model:", err)
 			return
