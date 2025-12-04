@@ -76,6 +76,7 @@ type Object struct {
 }
 
 func Init(opt Config) (*Client, error) {
+	fmt.Println(">>> [DEBUG] Init start") // 调试日志
 	client := Client{}
 
 	// Determine OS and architecture and set libPath
@@ -106,24 +107,26 @@ func Init(opt Config) (*Client, error) {
 	}
 
 	// Store libPath in temp file
+	fmt.Println(">>> [DEBUG] Extracting Libraries...") // 调试日志
 	var err error
 	client.LibExtractPath, err = extractLibs(lib, "/tmp")
 	if err != nil {
 		return &Client{}, err
 	}
-
+	fmt.Println(">>> [DEBUG] Libs extracted to:", client.LibExtractPath) // 调试日志
 	// Check if library file exists
 	if _, err := os.Stat(client.LibExtractPath + "/" + client.LibPath); err != nil {
 		return &Client{}, fmt.Errorf("libPath does not exist: %s", client.LibPath)
 	}
 
 	// Prepare models (Extract embedded ones anyway just in case)
+	fmt.Println(">>> [DEBUG] Extracting Models...") // 调试日志
 	modelTempPath, err := extractModels(models, "/tmp")
 	if err != nil {
 		return &Client{}, err
 	}
 	client.ModelBasePath = modelTempPath // Set base path for extracted models so it can be cleaned up later
-
+	
 	// === MODIFIED: Logic to support external model files ===
 	// Check if opt.Model is a valid local file
 	if _, err := os.Stat(opt.Model); err == nil {
@@ -144,6 +147,7 @@ func Init(opt Config) (*Client, error) {
 			// log.Printf("Model %s not found locally, using embedded yolov8n", opt.Model)
 			client.ModelPath = modelTempPath + "/models/yolov8n.onnx"
 		}
+	fmt.Printf(">>> [DEBUG] Selected Model Path: %s\n", client.ModelPath) // 调试日志
 	}
 
 	// Check if model file exists
@@ -172,10 +176,12 @@ func Init(opt Config) (*Client, error) {
 	client.EnableCoreMl = opt.EnableCoreMl
 
 	// Create session
+	fmt.Println(">>> [DEBUG] Calling initSession...") // 调试日志
 	ses, err := client.initSession()
 	if err != nil {
 		return &Client{}, err
 	}
+	fmt.Println(">>> [DEBUG] Session initialized successfully!") // 调试日志
 	client.RuntimeSession = ses
 	return &client, nil
 }
@@ -197,21 +203,25 @@ func (c *Client) Predict(imgRaw image.Image) ([]Object, *image.RGBA, error) {
 }
 
 func (c *Client) initSession() (ModelSession, error) {
+	fmt.Println(">>> [DEBUG] inside initSession") // 调试日志
 	// Change dir to libExtractPath and then change back
 	cwd, err := os.Getwd()
 	if err != nil {
 		return ModelSession{}, err
 	}
+	fmt.Println(">>> [DEBUG] Changing dir to lib path...")
 	err = os.Chdir(c.LibExtractPath) // Change dir to libExtractPath
 	if err != nil {
 		return ModelSession{}, err
 	}
-
+	fmt.Printf(">>> [DEBUG] Loading Shared Library: %s\n", c.LibPath)
 	onnx.SetSharedLibraryPath(c.LibPath) // Set libPath
+	fmt.Println(">>> [DEBUG] Initializing ONNX Environment...")
 	err = onnx.InitializeEnvironment()
 	if err != nil {
 		return ModelSession{}, err
 	}
+	fmt.Println(">>> [DEBUG] Environment Initialized.")
 	err = os.Chdir(cwd) // Change back to cwd
 	if err != nil {
 		return ModelSession{}, err
@@ -272,11 +282,15 @@ func (c *Client) initSession() (ModelSession, error) {
 	if err != nil {
 		return ModelSession{}, fmt.Errorf("error creating output tensor: %w", err)
 	}
-
+	fmt.Println(">>> [DEBUG] Creating Advanced Session (Loading Model)...")
 	session, err := onnx.NewAdvancedSession(c.ModelPath,
 		[]string{"images"}, []string{"output0"},
 		[]onnx.ArbitraryTensor{inputTensor}, []onnx.ArbitraryTensor{outputTensor}, options)
-
+    if err != nil {
+         fmt.Println(">>> [DEBUG] Session Creation FAILED")
+         return ModelSession{}, err
+    }
+	fmt.Println(">>> [DEBUG] Advanced Session Created.")
 	return ModelSession{
 		Session: session,
 		Input:   inputTensor,
