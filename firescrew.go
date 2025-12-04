@@ -96,6 +96,8 @@ type Config struct {
 		NetworkObjectDetectServer string   `json:"networkObjectDetectServer"`
 		EventGap                  int      `json:"eventGap"`
 		PrebufferSeconds          int      `json:"prebufferSeconds"`
+		GenerateGIF               bool     `json:"generateGIF"`   // 控制是否生成GIF
+		EveryNthFrame             int      `json:"everyNthFrame"` // 控制跳帧检测频率
 	} `json:"motion"`
 	Video struct {
 		HiResPath     string `json:"hiResPath"`
@@ -294,6 +296,13 @@ func readConfig(path string) Config {
 		os.Exit(1)
 	}
 
+	if config.Motion.EveryNthFrame > 0 {
+		everyNthFrame = config.Motion.EveryNthFrame
+	} else {
+		// 默认值，防止配置文件未设置或设置为0
+		everyNthFrame = 1
+	}
+	
 	// Print the configuration properties.
 	Log("info", "******************** CONFIG ********************")
 	Log("info", fmt.Sprintf("Print Debug: %t", config.PrintDebug))
@@ -312,6 +321,8 @@ func readConfig(path string) Config {
 	Log("info", fmt.Sprintf("Motion Network Object Detect Server: %s", config.Motion.NetworkObjectDetectServer))
 	Log("info", fmt.Sprintf("Motion PrebufferSeconds: %d", config.Motion.PrebufferSeconds))
 	Log("info", fmt.Sprintf("Motion EventGap: %d", config.Motion.EventGap))
+	Log("info", fmt.Sprintf("Motion EveryNthFrame: %d", everyNthFrame))
+	Log("info", fmt.Sprintf("Motion GenerateGIF: %t", config.Motion.GenerateGIF))
 	Log("info", fmt.Sprintf("Pixel Motion Area Threshold: %f", config.PixelMotionAreaThreshold))
 	Log("info", fmt.Sprintf("Object Center Movement Threshold: %f", config.ObjectCenterMovementThreshold))
 	Log("info", fmt.Sprintf("Object Area Threshold: %f", config.ObjectAreaThreshold))
@@ -1208,62 +1219,69 @@ func performDetectionOnObject(originalFrame *image.RGBA, frame *image.RGBA, pred
 				eventHandler("motion_start", eventJson)
 
 				// Send pushover notification
-				if globalConfig.Notifications.EnablePushoverAlerts {
-					frameCopy := *frame
-
-					ob.DrawRectangle(&frameCopy, rect, color.RGBA{255, 165, 0, 255}, 2) // Draw orange rectangle
-
-					pt := image.Pt(predict.Left, predict.Top-5)
-					if predict.Top-5 < 0 {
-						pt = image.Pt(predict.Left, predict.Top+20) // if the box is too close to the top of the image, put the label inside the box
-					}
-					ob.AddLabelWithTTF(&frameCopy, fmt.Sprintf("%s %.2f", predict.ClassName, predict.Confidence), pt, color.RGBA{255, 165, 0, 255}, 12.0) // Orange size 12 font
-
-					// Send pushover notification
-					err := sendPushoverNotification(globalConfig.Notifications.PushoverUserKey, globalConfig.Notifications.PushoverAppToken, "Motion detected!", &frameCopy)
+if globalConfig.Notifications.EnablePushoverAlerts { 
+		// 计算本次运动持续时间，用于通知文案
+		duration := runtimeConfig.MotionVideo.MotionEnd.Sub(runtimeConfig.MotionVideo.MotionStart).Round(time.Second)
+		
+		if globalConfig.Motion.GenerateGIF {
+			// === 情况 A: 开启了 Pushover 且 开启了 GIF ===
+			gifSliceMutex.Lock()
+			
+			if len(gifSlice) > 0 {
+				gifPath := filepath.Join(basePath, fmt.Sprintf("%s.gif", runtimeConfig.MotionVideo.ID))
+				
+				// 1. 创建 GIF
+				err := CreateGIF(gifSlice, gifPath, 100)
+				if err != nil {
+					Log("error", fmt.Sprintf("Error creating GIF: %v", err))
+					// 如果生成 GIF 失败，降级发送纯文本
+					txtMsg := fmt.Sprintf("Motion ended (GIF Failed). Camera: %s. Duration: %s", runtimeConfig.MotionVideo.CameraName, duration)
+					sendPushoverNotificationText(globalConfig.Notifications.PushoverUserKey, globalConfig.Notifications.PushoverAppToken, txtMsg)
+				} else {
+					// 2. 发送 GIF 通知
+					msg := fmt.Sprintf("Motion ended. Camera: %s. Duration: %s", runtimeConfig.MotionVideo.CameraName, duration)
+					err = sendPushoverNotificationGif(globalConfig.Notifications.PushoverUserKey, globalConfig.Notifications.PushoverAppToken, msg, gifPath)
 					if err != nil {
 						Log("error", fmt.Sprintf("Error sending pushover notification: %v", err))
 					}
-
+					// 3. 删除 GIF 文件
+					os.Remove(gifPath)
 				}
-
-				// Unlock mutex
-				runtimeConfig.MotionMutex.Unlock()
 			} else {
-				// Lock mutex
-				runtimeConfig.MotionMutex.Lock()
-				runtimeConfig.MotionTriggeredLast = now
-				runtimeConfig.MotionVideo.Objects = append(runtimeConfig.MotionVideo.Objects, object)
+				// 有 GIF 配置但没有帧数据（极短事件），发送纯文本
+				txtMsg := fmt.Sprintf("Motion ended (No Frames). Camera: %s. Duration: %s", runtimeConfig.MotionVideo.CameraName, duration)
+				sendPushoverNotificationText(globalConfig.Notifications.PushoverUserKey, globalConfig.Notifications.PushoverAppToken, txtMsg)
+			}
+			
+			// 必须清理内存
+			gifSlice = make([]image.RGBA, 0)
+			gifSliceMutex.Unlock()
 
-				// Notify in realtime about detected objects
-				type Event struct {
-					Type                string    `json:"type"`
-					Timestamp           time.Time `json:"timestamp"`
-					MotionTriggeredLast time.Time `json:"motion_triggered_last"`
-					ID                  string    `json:"id"`
-					MotionStart         time.Time `json:"motion_start"`
-					Objects             []TrackedObject
-					CameraName          string `json:"camera_name"`
+			} else {
+			// === 情况 B: 开启了 Pushover 但 禁用了 GIF ===
+			// 发送纯文本通知
+			txtMsg := fmt.Sprintf("Motion ended. Camera: %s. Duration: %s", runtimeConfig.MotionVideo.CameraName, duration)
+			
+			err := sendPushoverNotificationText(globalConfig.Notifications.PushoverUserKey, globalConfig.Notifications.PushoverAppToken, txtMsg)
+			if err != nil {
+				Log("error", fmt.Sprintf("Error sending pushover text: %v", err))
+			}
+			
+			// 清理内存（以防万一有残留数据）
+			gifSliceMutex.Lock()
+			if len(gifSlice) > 0 {
+				gifSlice = make([]image.RGBA, 0)
+			}
+			gifSliceMutex.Unlock()
 				}
-
-				eventRaw := Event{
-					Type:                "motion_update",
-					Timestamp:           time.Now(),
-					MotionTriggeredLast: time.Now(),
-					ID:                  runtimeConfig.MotionVideo.ID,
-					MotionStart:         runtimeConfig.MotionVideo.MotionStart,
-					Objects:             runtimeConfig.MotionVideo.Objects,
-					CameraName:          runtimeConfig.MotionVideo.CameraName,
+			} else {
+				// === 情况 C: 禁用了 Pushover 通知 ===
+				// 必须清理内存，否则内存泄漏
+				gifSliceMutex.Lock()
+				if len(gifSlice) > 0 {
+					gifSlice = make([]image.RGBA, 0)
 				}
-				eventJson, err := json.Marshal(eventRaw)
-				if err != nil {
-					Log("error", fmt.Sprintf("Error marshalling motion_update event: %v", err))
-					return
-				}
-				eventHandler("motion_update", eventJson)
-
-				// Unlock mutex
-				runtimeConfig.MotionMutex.Unlock()
+				gifSliceMutex.Unlock()
 			}
 
 			// Log("error", fmt.Sprintf("STORED %d OBJECTS", len(runtimeConfig.MotionVideo.Objects)))
@@ -1290,10 +1308,14 @@ func performDetectionOnObject(originalFrame *image.RGBA, frame *image.RGBA, pred
 				}
 
 				// Add frames for gif
-				copyFrame := *frame
-				gifSliceMutex.Lock()
-				gifSlice = append(gifSlice, copyFrame)
-				gifSliceMutex.Unlock()
+				if globalConfig.Motion.GenerateGIF {
+					gifSliceMutex.Lock()
+                    // 额外建议：加一个硬上限防止内存溢出，即使开启了GIF
+					if len(gifSlice) < 200 { 
+						gifSlice = append(gifSlice, copyFrame)
+					}
+					gifSliceMutex.Unlock()
+				}
 
 				// 确保目录存在
 				fullSnapshotPath := filepath.Join(globalConfig.Video.HiResPath, snapshotFilename)
@@ -2065,6 +2087,28 @@ func sendPushoverNotificationGif(userKey string, appToken string, msg string, gi
 	defer resp.Body.Close()
 
 	// Check the response
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("Non-OK HTTP status: %s", resp.Status)
+	}
+
+	return nil
+}
+
+func sendPushoverNotificationText(userKey string, appToken string, msg string) error {
+	// 构建表单数据
+	data := url.Values{}
+	data.Set("token", appToken)
+	data.Set("user", userKey)
+	data.Set("message", msg)
+
+	// 发送 POST 请求
+	resp, err := http.PostForm("https://api.pushover.net/1/messages.json", data)
+	if err != nil {
+		return fmt.Errorf("PostForm Error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 检查响应状态
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("Non-OK HTTP status: %s", resp.Status)
 	}
