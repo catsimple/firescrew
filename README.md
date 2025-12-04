@@ -233,7 +233,9 @@ Firescrew uses a JSON configuration file for its settings. Here is a brief expla
     },
 
     "motion": {
-        "onnxModel": "yolov8n", // Name of the model to use. e.g., "yolov8n". Leave empty to use legacy objectPredict.
+        "onnxModel": "yolo11n", // Name of the model to use. e.g., "yolov8n". Leave empty to use legacy objectPredict. yolov8n/yolov8m/yolov8s/yolo11n(320x320) available
+        "onnxModelWidth": 320, // must be consistent with model (yolo11n inside the container is 320, yolov8 series is 640)
+        "onnxModelHeight": 320, // must be consistent with model (yolo11n inside the container is 320, yolov8 series is 640)
         "onnxEnableCoreMl": false, // Enable CoreML hardware acceleration (macOS only).
         "embeddedObjectScript": "objectDetectServerYolo.py", // Python script for object detection: "objectDetectServerYolo.py" or "objectDetectServerCoral.py".
         "confidenceMinThreshold": 0.60, // Minimum confidence (0.0 - 1.0) to consider an object valid.
