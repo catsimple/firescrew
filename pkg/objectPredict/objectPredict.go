@@ -132,6 +132,8 @@ func Init(opt Config) (*Client, error) {
 	} else {
 		// Fallback to embedded models
 		switch opt.Model {
+		case "yolo11n":
+			client.ModelPath = modelTempPath + "/models/yolo11n.onnx"
 		case "yolov8n":
 			client.ModelPath = modelTempPath + "/models/yolov8n.onnx"
 		case "yolov8s":
